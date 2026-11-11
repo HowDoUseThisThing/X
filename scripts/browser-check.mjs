@@ -15,6 +15,23 @@ assert.ok(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable');
 const server=spawn(process.execPath,['scripts/serve.mjs'],{env:{...process.env,PORT:'43928'},stdio:['ignore','pipe','pipe']});
 let browser;
 const errors=[];
+async function audioPeak(page) {
+  return page.evaluate(async()=>{
+    const {ui}=window.__MOON_SURVIVOR__;
+    const analyser=ui.audioContext.createAnalyser();analyser.fftSize=2048;
+    ui.masterGain.connect(analyser);
+    const samples=new Float32Array(analyser.fftSize);
+    let peak=0;
+    try {
+      for(let frame=0;frame<8;frame++) {
+        await new Promise(resolve=>setTimeout(resolve,16));
+        analyser.getFloatTimeDomainData(samples);
+        for(const value of samples) peak=Math.max(peak,Math.abs(value));
+      }
+    } finally {ui.masterGain.disconnect(analyser);}
+    return peak;
+  });
+}
 try {
   await Promise.race([once(server.stdout,'data'), once(server,'exit').then(()=>{throw Error('Server exited before startup');})]);
   browser=await puppeteer.launch({executablePath,headless:true});
@@ -27,6 +44,41 @@ try {
   await page.screenshot({path:'output/screenshots/title.png'});
   await page.click('#start');
   await page.waitForFunction(()=>window.__MOON_SURVIVOR__.game.state==='playing');
+  await page.waitForFunction(()=>window.__MOON_SURVIVOR__.ui.audio.ready);
+  const startPeak=await audioPeak(page);
+  assert.ok(startPeak>0.02,'Starting a run should produce a clear audio signal');
+  await page.evaluate(()=>window.__MOON_SURVIVOR__.ui.audioContext.suspend());
+  await page.waitForFunction(()=>!window.__MOON_SURVIVOR__.ui.audio.ready);
+  await page.click('#sound');
+  await page.waitForFunction(()=>window.__MOON_SURVIVOR__.ui.audio.ready);
+  assert.equal(await page.$eval('#sound',e=>e.getAttribute('aria-pressed')),'true');
+  await page.click('#sound');
+  assert.equal(await page.evaluate(()=>window.__MOON_SURVIVOR__.ui.soundOn),false);
+  assert.ok(await audioPeak(page)<0.00001,'Muted audio should have zero output');
+  await page.click('#sound');
+  await page.waitForFunction(()=>window.__MOON_SURVIVOR__.ui.audio.ready);
+  const resumedPeak=await audioPeak(page);
+  assert.ok(resumedPeak>0.02,'Re-enabling sound should restore a clear signal');
+  const renderChecks=await page.evaluate(()=>{
+    const {game,renderer}=window.__MOON_SURVIVOR__;
+    const fixture={player:{...game.player,x:0,y:0},state:'paused',elapsed:0,shake:0,gems:[],projectiles:[],particles:[],enemies:[
+      {id:'visible',type:'shade',x:0,y:0,radius:12,hp:28,maxHp:28,color:'#b2a0ee',hitFlash:0},
+      {id:'distant',type:'runner',x:1500,y:900,radius:9,hp:18,maxHp:18,color:'#ff7990',hitFlash:0},
+    ]};
+    renderer.draw(fixture,0);
+    const firstCacheSize=renderer.sprites.images.size;
+    for(let i=0;i<12;i++)renderer.draw(fixture,0);
+    const result={...renderer.metrics,cacheReused:renderer.sprites.images.size===firstCacheSize};
+    const originalLevel=renderer.quality.level;
+    renderer.quality.level=2;renderer.resize();renderer.draw(fixture,0);
+    result.lowQualityDraws=renderer.metrics.enemiesDrawn;
+    renderer.quality.level=originalLevel;renderer.resize();renderer.draw(game,0);
+    return result;
+  });
+  assert.equal(renderChecks.enemiesDrawn,1);
+  assert.equal(renderChecks.enemiesSkipped,1);
+  assert.equal(renderChecks.cacheReused,true);
+  assert.equal(renderChecks.lowQualityDraws,1);
   await page.keyboard.down('KeyD');
   await page.waitForFunction(()=>window.__MOON_SURVIVOR__.game.player.x>30);
   await page.keyboard.up('KeyD');
@@ -72,10 +124,14 @@ try {
   await page.waitForSelector('#result-screen.is-visible');
   await page.click('#restart');
   await page.waitForFunction(()=>window.__MOON_SURVIVOR__.game.state==='playing'&&window.__MOON_SURVIVOR__.game.player.level===1);
-  await page.setViewport({width:390,height:844,isMobile:true,hasTouch:true});
+  await page.setViewport({width:390,height:844,deviceScaleFactor:3,isMobile:true,hasTouch:true});
   await page.reload({waitUntil:'networkidle0'});
   await page.screenshot({path:'output/screenshots/mobile-title.png'});
   await page.click('#start');
+  await page.waitForFunction(()=>window.__MOON_SURVIVOR__.ui.audio.ready);
+  const mobilePeak=await audioPeak(page);
+  assert.ok(mobilePeak>0.02,'Mobile start gesture should produce audio');
+  assert.ok(await page.evaluate(()=>window.__MOON_SURVIVOR__.renderer.dpr)<=1.5,'Phone render buffer should be bounded');
   assert.equal(await page.$eval('#mobile-controls',e=>e.classList.contains('active')),true);
   await page.evaluate(()=>{
     const z=document.querySelector('#stick-zone'),r=z.getBoundingClientRect();
@@ -89,7 +145,7 @@ try {
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
   await page.screenshot({path:'output/screenshots/mobile-game.png'});
   assert.deepEqual(errors,[]);
-  const report={passed:true,checked:['desktop start/movement','player centered inside the map','player off-center at world edge','facing follows movement','pause/resume','upgrade choice','death/restart','page transition recovery (synthetic)','mobile layout','touch vector adapter','blur clears input'],errors,date:new Date().toISOString()};
+  const report={passed:true,checked:['desktop start/movement','audio output signal','suspended audio recovery','mute and re-enable audio','offscreen enemy culling','sprite cache reuse','low quality preserves actors','player centered inside the map','player off-center at world edge','facing follows movement','pause/resume','upgrade choice','death/restart','page transition recovery (synthetic)','mobile audio output signal','mobile render resolution limit','mobile layout','touch vector adapter','blur clears input'],audio:{startPeak,resumedPeak,mobilePeak},renderChecks,errors,date:new Date().toISOString()};
   await writeFile('output/browser-validation.json',JSON.stringify(report,null,2));
   console.log(JSON.stringify(report,null,2));
 } finally { if(browser) await browser.close(); server.kill(); }

@@ -1,5 +1,6 @@
 import { clamp, distance, mulberry32, normalize } from "../core/math.js";
 import { WORLD, clampToWorld, isInsideWorld } from "./world.js";
+import { SpatialGrid } from "./spatial-grid.js";
 
 const UPGRADES = [
   { id: "might", icon: "✹", name: "余烬共鸣", desc: "武器伤害提升 25%", apply: s => { s.damage *= 1.25; } },
@@ -24,6 +25,8 @@ const ENEMY_TYPES = [
 export class SurvivorGame {
   constructor(seed = 0x51ea) {
     this.seed = seed >>> 0;
+    this.particleLimit = 360;
+    this.enemyGrid = new SpatialGrid();
     this.reset(this.seed);
   }
 
@@ -47,6 +50,8 @@ export class SurvivorGame {
     this.projectiles = [];
     this.gems = [];
     this.particles = [];
+    this.enemyGrid.clear();
+    this.collisionChecksLastUpdate = 0;
     this.upgradeChoices = [];
     this.lastAim = { x: 1, y: 0 };
   }
@@ -182,6 +187,12 @@ export class SurvivorGame {
   }
 
   updateProjectiles(dt) {
+    this.collisionChecksLastUpdate = 0;
+    if (!this.projectiles.length) {
+      this.enemyGrid.clear();
+      return;
+    }
+    this.enemyGrid.rebuild(this.enemies);
     for (let i = this.projectiles.length - 1; i >= 0; i -= 1) {
       const shot = this.projectiles[i];
       shot.x += shot.vx * dt;
@@ -190,8 +201,11 @@ export class SurvivorGame {
       shot.trail.push({ x: shot.x, y: shot.y });
       if (shot.trail.length > 4) shot.trail.shift();
       let consumed = false;
-      for (const enemy of [...this.enemies]) {
+      const candidates = this.enemyGrid.query(shot.x, shot.y, shot.radius);
+      for (const index of candidates) {
+        const enemy = this.enemyGrid.items[index];
         if (shot.hitIds.has(enemy.id)) continue;
+        this.collisionChecksLastUpdate += 1;
         if (distance(shot.x, shot.y, enemy.x, enemy.y) <= shot.radius + enemy.radius) {
           shot.hitIds.add(enemy.id);
           enemy.hp -= shot.damage;
@@ -211,6 +225,7 @@ export class SurvivorGame {
     const index = this.enemies.indexOf(enemy);
     if (index < 0) return;
     this.enemies.splice(index, 1);
+    this.enemyGrid.remove(enemy);
     this.kills += 1;
     const gemPosition = clampToWorld(enemy.x, enemy.y, 8 + enemy.xp);
     this.gems.push({ x: gemPosition.x, y: gemPosition.y, radius: 7 + enemy.xp, value: enemy.xp, phase: this.random() * 6.28, color: enemy.xp > 1 ? "#9fe8df" : "#a8c8ff" });
@@ -277,23 +292,34 @@ export class SurvivorGame {
   }
 
   burst(x, y, color, amount) {
+    const limit = Math.max(0, Math.floor(this.particleLimit));
+    if (this.particles.length > limit) this.particles.length = limit;
     for (let i = 0; i < amount; i += 1) {
       const angle = this.random() * Math.PI * 2;
       const speed = 24 + this.random() * 145;
-      this.particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: 0.28 + this.random() * 0.42, maxLife: 0.7, radius: 1.2 + this.random() * 2.3, color });
+      // Decoration shares the spawn RNG: consume all four draws even when
+      // the budget is full, without allocating a discarded particle.
+      const life = 0.28 + this.random() * 0.42;
+      const radius = 1.2 + this.random() * 2.3;
+      if (this.particles.length < limit) {
+        this.particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life, maxLife: 0.7, radius, color });
+      }
     }
   }
 
   updateParticles(dt) {
-    for (let i = this.particles.length - 1; i >= 0; i -= 1) {
+    const limit = Math.max(0, Math.floor(this.particleLimit));
+    let alive = 0;
+    for (let i = 0; i < this.particles.length; i += 1) {
       const particle = this.particles[i];
       particle.x += particle.vx * dt;
       particle.y += particle.vy * dt;
       particle.vx *= 0.95;
       particle.vy *= 0.95;
       particle.life -= dt;
-      if (particle.life <= 0) this.particles.splice(i, 1);
+      if (particle.life > 0 && alive < limit) this.particles[alive++] = particle;
     }
+    this.particles.length = alive;
   }
 }
 

@@ -1,5 +1,7 @@
 import { WORLD, getCameraCenter, isInsideWorld } from "../game/world.js";
 import { TerrainRenderer } from "./terrain.js";
+import { AdaptiveQuality } from "./quality.js";
+import { SpriteCache } from "./sprites.js";
 
 const TAU = Math.PI * 2;
 
@@ -10,6 +12,11 @@ export class CanvasRenderer {
     this.width = 1;
     this.height = 1;
     this.dpr = 1;
+    this.quality = new AdaptiveQuality({ mobile: window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0 });
+    this.sprites = new SpriteCache();
+    this.view = { left: 0, top: 0, right: 1, bottom: 1 };
+    this.threats = Array.from({ length: 12 }, () => ({ enemy: null, distance: Infinity }));
+    this.metrics = { enemiesDrawn: 0, enemiesSkipped: 0, gemsDrawn: 0, threatsDrawn: 0 };
     this.terrain = new TerrainRenderer();
     this.footsteps = [];
     this.trackedPlayer = null;
@@ -26,27 +33,41 @@ export class CanvasRenderer {
   }
 
   resize() {
-    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.dpr = this.quality.pixelRatio(window.devicePixelRatio || 1);
     const rect = this.canvas.getBoundingClientRect();
     this.width = Math.max(1, rect.width);
     this.height = Math.max(1, rect.height);
     this.canvas.width = Math.round(this.width * this.dpr);
     this.canvas.height = Math.round(this.height * this.dpr);
     this.context.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.boundaryGradient = this.context.createRadialGradient(this.width / 2, this.height / 2, Math.min(this.width, this.height) * .32, this.width / 2, this.height / 2, Math.max(this.width, this.height) * .72);
+    this.boundaryGradient.addColorStop(0, "rgba(123,83,188,0)");
+    this.boundaryGradient.addColorStop(1, "rgba(151,101,226,1)");
+  }
+
+  recordFrame(milliseconds, playing) {
+    if (this.quality.sample(milliseconds, playing)) this.resize();
+  }
+
+  inView(x, y, radius = 0) {
+    const view = this.view;
+    return x + radius >= view.left && x - radius <= view.right && y + radius >= view.top && y - radius <= view.bottom;
   }
 
   draw(game, now = 0) {
     const ctx = this.context;
     const w = this.width, h = this.height;
     const p = game.player;
+    const settings = this.quality.settings;
     this.updateFootsteps(game);
     const camera = getCameraCenter(p.x, p.y, w, h);
     const ox = camera.x - w / 2, oy = camera.y - h / 2;
-    const vignette = ctx.createRadialGradient(w / 2, h / 2, 20, w / 2, h / 2, Math.max(w, h) * 0.78);
-    vignette.addColorStop(0, "#191722");
-    vignette.addColorStop(0.56, "#11111a");
-    vignette.addColorStop(1, "#090a11");
-    ctx.fillStyle = vignette;
+    this.view.left = ox - 10; this.view.top = oy - 10;
+    this.view.right = ox + w + 10; this.view.bottom = oy + h + 10;
+    this.metrics.enemiesDrawn = 0; this.metrics.enemiesSkipped = 0;
+    this.metrics.gemsDrawn = 0; this.metrics.threatsDrawn = 0;
+    for (const threat of this.threats) { threat.enemy = null; threat.distance = Infinity; }
+    ctx.fillStyle = "#090b12";
     ctx.fillRect(0, 0, w, h);
 
     ctx.save();
@@ -54,7 +75,8 @@ export class CanvasRenderer {
     ctx.translate(-ox + Math.sin(now * 79) * shake, -oy + Math.cos(now * 71) * shake);
     this.terrain.draw(ctx, ox, oy, w, h);
 
-    for (const star of this.stars) {
+    for (let i = 0; i < this.stars.length; i += settings.starStride) {
+      const star = this.stars[i];
       const x = ((star.x * 10400 - ox * 0.24) % (w + 80) + w + 80) % (w + 80) - 40 + ox;
       const y = ((star.y * 10400 - oy * 0.24) % (h + 80) + h + 80) % (h + 80) - 40 + oy;
       ctx.fillStyle = `rgba(196,183,226,${star.alpha * (0.2 + Math.sin(now * 1.4 + x) * 0.06)})`;
@@ -62,13 +84,35 @@ export class CanvasRenderer {
     }
 
     this.drawFootsteps(ctx, game.elapsed);
-    for (const gem of game.gems) this.drawGem(ctx, gem, now);
-    for (const shot of game.projectiles) this.drawProjectile(ctx, shot);
-    for (const enemy of game.enemies) this.drawEnemy(ctx, enemy, now);
-    for (const particle of game.particles) {
+    for (const gem of game.gems) {
+      if (!this.inView(gem.x, gem.y, gem.radius + 22)) continue;
+      this.drawGem(ctx, gem, now);
+      this.metrics.gemsDrawn += 1;
+    }
+    for (const shot of game.projectiles) {
+      if (this.inView(shot.x, shot.y, shot.radius + 60)) this.drawProjectile(ctx, shot);
+    }
+    for (const enemy of game.enemies) {
+      if (this.inView(enemy.x, enemy.y, enemy.radius * 1.2 + 24)) {
+        this.drawEnemy(ctx, enemy, now);
+        this.metrics.enemiesDrawn += 1;
+      } else this.metrics.enemiesSkipped += 1;
+      const x = enemy.x - ox, y = enemy.y - oy;
+      if (x > 28 && x < w - 28 && y > 56 && y < h - 40) continue;
+      if (!isInsideWorld(enemy.x, enemy.y)) continue;
+      const dx = enemy.x - p.x, dy = enemy.y - p.y;
+      const sector = Math.floor((Math.atan2(dy, dx) + Math.PI) / TAU * this.threats.length) % this.threats.length;
+      const threat = this.threats[sector], distance = dx * dx + dy * dy;
+      if (distance < threat.distance) { threat.enemy = enemy; threat.distance = distance; }
+    }
+    let particlesDrawn = 0;
+    for (let i = game.particles.length - 1; i >= 0 && particlesDrawn < settings.particleLimit; i -= 1) {
+      const particle = game.particles[i];
+      if (!this.inView(particle.x, particle.y, particle.radius)) continue;
       ctx.globalAlpha = Math.max(0, particle.life / particle.maxLife);
       ctx.fillStyle = particle.color;
       ctx.beginPath(); ctx.arc(particle.x, particle.y, particle.radius, 0, TAU); ctx.fill();
+      particlesDrawn += 1;
     }
     ctx.globalAlpha = 1;
     this.drawWorldBorder(ctx, WORLD);
@@ -77,17 +121,18 @@ export class CanvasRenderer {
 
     this.drawBoundaryWarning(ctx, p, w, h, now);
 
-    // Edge-of-screen threat cues keep off-screen pursuers readable without clutter.
-    for (const enemy of game.enemies) {
+    // Keep the closest threat in each direction instead of stacking hundreds of arrows.
+    for (const threat of this.threats) {
+      const enemy = threat.enemy;
+      if (!enemy) continue;
       const x = enemy.x - ox, y = enemy.y - oy;
-      if (x > 28 && x < w - 28 && y > 56 && y < h - 40) continue;
-      if (!isInsideWorld(enemy.x, enemy.y, 0)) continue;
-      const angle = Math.atan2(y - h / 2, x - w / 2);
+      const angle = Math.atan2(enemy.y - p.y, enemy.x - p.x);
       const ex = Math.max(20, Math.min(w - 20, x)), ey = Math.max(48, Math.min(h - 26, y));
       ctx.save(); ctx.translate(ex, ey); ctx.rotate(angle);
       ctx.fillStyle = "rgba(244,112,145,.65)";
       ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath(); ctx.fill();
       ctx.restore();
+      this.metrics.threatsDrawn += 1;
     }
   }
 
@@ -128,7 +173,7 @@ export class CanvasRenderer {
       ctx.save(); ctx.translate(step.x, step.y); ctx.rotate(step.angle);
       ctx.fillStyle = `rgba(166,151,133,${fade * .25})`;
       ctx.beginPath(); ctx.ellipse(-4, 0, 4.5, 2, 0, 0, TAU); ctx.fill();
-      if (age < .45) {
+      if (age < .45 && this.quality.settings.glow) {
         ctx.fillStyle = `rgba(193,178,157,${(1 - age / .45) * .22})`;
         ctx.beginPath(); ctx.arc(-7 - age * 10, -3 - age * 5, 1.5 + age * 3, 0, TAU); ctx.fill();
         ctx.beginPath(); ctx.arc(-9 - age * 6, 3 + age * 4, 1 + age * 2, 0, TAU); ctx.fill();
@@ -170,19 +215,35 @@ export class CanvasRenderer {
 
   drawWorldBorder(ctx, world) {
     const left = -world.width / 2, top = -world.height / 2;
+    const right = -left, bottom = -top, view = this.view;
+    const visibleLeft = left >= view.left - 24 && left <= view.right + 24;
+    const visibleRight = right >= view.left - 24 && right <= view.right + 24;
+    const visibleTop = top >= view.top - 24 && top <= view.bottom + 24;
+    const visibleBottom = bottom >= view.top - 24 && bottom <= view.bottom + 24;
+    if (!visibleLeft && !visibleRight && !visibleTop && !visibleBottom) return;
+    const trace = inset => {
+      const y1 = Math.max(top + inset, view.top - 24), y2 = Math.min(bottom - inset, view.bottom + 24);
+      const x1 = Math.max(left + inset, view.left - 24), x2 = Math.min(right - inset, view.right + 24);
+      ctx.beginPath();
+      if (visibleLeft) { ctx.moveTo(left + inset, y1); ctx.lineTo(left + inset, y2); }
+      if (visibleRight) { ctx.moveTo(right - inset, y1); ctx.lineTo(right - inset, y2); }
+      if (visibleTop) { ctx.moveTo(x1, top + inset); ctx.lineTo(x2, top + inset); }
+      if (visibleBottom) { ctx.moveTo(x1, bottom - inset); ctx.lineTo(x2, bottom - inset); }
+      ctx.stroke();
+    };
     ctx.save();
     ctx.strokeStyle = "rgba(157, 118, 224, .22)";
     ctx.lineWidth = 12;
-    ctx.shadowBlur = 24;
+    ctx.shadowBlur = this.quality.settings.glow ? 24 : 0;
     ctx.shadowColor = "rgba(132, 92, 211, .7)";
-    ctx.strokeRect(left, top, world.width, world.height);
+    trace(0);
     ctx.shadowBlur = 0;
     ctx.strokeStyle = "rgba(222, 194, 255, .82)";
     ctx.lineWidth = 2;
-    ctx.strokeRect(left, top, world.width, world.height);
+    trace(0);
     ctx.strokeStyle = "rgba(118, 87, 176, .28)";
     ctx.lineWidth = 1;
-    ctx.strokeRect(left + 7, top + 7, world.width - 14, world.height - 14);
+    trace(7);
     ctx.restore();
   }
 
@@ -193,11 +254,9 @@ export class CanvasRenderer {
     const strength = Math.max(0, 1 - Math.min(distanceX, distanceY) / threshold);
     if (strength <= 0) return;
     const pulse = 0.45 + Math.sin(now * 5) * 0.18;
-    const gradient = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.32, w / 2, h / 2, Math.max(w, h) * 0.72);
-    gradient.addColorStop(0, "rgba(123, 83, 188, 0)");
-    gradient.addColorStop(1, "rgba(151, 101, 226, " + strength * pulse + ")");
     ctx.save();
-    ctx.fillStyle = gradient;
+    ctx.globalAlpha = strength * pulse;
+    ctx.fillStyle = this.boundaryGradient;
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
   }
@@ -205,23 +264,8 @@ export class CanvasRenderer {
   drawEnemy(ctx, enemy, now) {
     const pulse = 1 + Math.sin(now * (enemy.type === "runner" ? 8 : 3) + enemy.x * 0.1) * 0.055;
     ctx.save(); ctx.translate(enemy.x, enemy.y); ctx.scale(pulse, 1 / pulse);
-    const gradient = ctx.createRadialGradient(-enemy.radius * 0.3, -enemy.radius * 0.4, 1, 0, 0, enemy.radius * 1.65);
-    gradient.addColorStop(0, enemy.hitFlash ? "#fff" : enemy.color);
-    gradient.addColorStop(1, "rgba(19,17,29,.86)");
-    ctx.fillStyle = gradient;
-    ctx.shadowBlur = 14; ctx.shadowColor = enemy.color;
-    ctx.beginPath();
-    const points = enemy.type === "wraith" ? 7 : 8;
-    for (let i = 0; i < points; i += 1) {
-      const r = enemy.radius * (i % 2 ? 0.78 : 1.12);
-      const a = i / points * TAU + (enemy.type === "brute" ? 0.12 : 0);
-      if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
-      else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
-    }
-    ctx.closePath(); ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(13,11,22,.72)";
-    ctx.beginPath(); ctx.arc(-3, -1, 2.1, 0, TAU); ctx.arc(4, -1, 2.1, 0, TAU); ctx.fill();
+    const sprite = this.sprites.enemy(enemy, this.quality.settings.glow);
+    ctx.drawImage(sprite.canvas, -sprite.size / 2, -sprite.size / 2, sprite.size, sprite.size);
     if (enemy.hp < enemy.maxHp) {
       const width = enemy.radius * 2.1;
       ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(-width / 2, -enemy.radius - 8, width, 3);
@@ -231,23 +275,23 @@ export class CanvasRenderer {
   }
 
   drawProjectile(ctx, shot) {
-    for (let i = 0; i < shot.trail.length; i += 1) {
+    const first = Math.max(0, shot.trail.length - this.quality.settings.trailPoints);
+    for (let i = first; i < shot.trail.length; i += 1) {
       const point = shot.trail[i];
       ctx.globalAlpha = (i + 1) / (shot.trail.length + 2) * 0.38;
       ctx.fillStyle = "#ffd9ad";
       ctx.beginPath(); ctx.arc(point.x, point.y, shot.radius * (i + 1) / (shot.trail.length + 1), 0, TAU); ctx.fill();
     }
     ctx.globalAlpha = 1;
-    ctx.fillStyle = "#fff1d8"; ctx.shadowBlur = 17; ctx.shadowColor = "#ffbc85";
-    ctx.beginPath(); ctx.arc(shot.x, shot.y, shot.radius, 0, TAU); ctx.fill(); ctx.shadowBlur = 0;
+    const sprite = this.sprites.projectile(this.quality.settings.glow), size = sprite.size * shot.radius / 5;
+    ctx.drawImage(sprite.canvas, shot.x - size / 2, shot.y - size / 2, size, size);
   }
 
   drawGem(ctx, gem, now) {
     ctx.save(); ctx.translate(gem.x, gem.y); ctx.rotate(Math.PI / 4 + Math.sin(now + gem.phase) * 0.15);
-    ctx.shadowBlur = 15; ctx.shadowColor = gem.color; ctx.fillStyle = gem.color;
-    const size = gem.radius * (0.72 + Math.sin(gem.phase) * 0.08);
-    ctx.fillRect(-size / 2, -size / 2, size, size);
-    ctx.fillStyle = "rgba(255,255,255,.76)"; ctx.fillRect(-size / 2, -size / 2, size * 0.34, size * 0.34);
+    const sprite = this.sprites.gem(gem.color, this.quality.settings.glow);
+    const size = sprite.size * gem.radius / 8 * (.72 + Math.sin(gem.phase) * .08);
+    ctx.drawImage(sprite.canvas, -size / 2, -size / 2, size, size);
     ctx.restore();
   }
 }

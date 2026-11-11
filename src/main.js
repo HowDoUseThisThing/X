@@ -17,6 +17,8 @@ function frame(timestamp) {
   if (!running) return;
   const seconds = lastTime ? (timestamp - lastTime) / 1000 : 0;
   lastTime = timestamp;
+  renderer.recordFrame(seconds * 1000, game.state === "playing");
+  game.particleLimit = renderer.quality.settings.particleLimit;
   const controls = input.sample();
   game.update(seconds, controls, { width: renderer.width, height: renderer.height });
   renderer.draw(game, timestamp / 1000);
