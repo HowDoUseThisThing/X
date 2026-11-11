@@ -1,4 +1,5 @@
 import { WORLD, getCameraCenter, isInsideWorld } from "../game/world.js";
+import { TerrainRenderer } from "./terrain.js";
 
 const TAU = Math.PI * 2;
 
@@ -9,6 +10,11 @@ export class CanvasRenderer {
     this.width = 1;
     this.height = 1;
     this.dpr = 1;
+    this.terrain = new TerrainRenderer();
+    this.footsteps = [];
+    this.trackedPlayer = null;
+    this.stepDistance = 0;
+    this.stepSide = 1;
     this.stars = Array.from({ length: 130 }, (_, i) => ({
       x: Math.sin(i * 127.1) * 10000 % 1,
       y: Math.sin(i * 311.7 + 8) * 10000 % 1,
@@ -33,6 +39,7 @@ export class CanvasRenderer {
     const ctx = this.context;
     const w = this.width, h = this.height;
     const p = game.player;
+    this.updateFootsteps(game);
     const camera = getCameraCenter(p.x, p.y, w, h);
     const ox = camera.x - w / 2, oy = camera.y - h / 2;
     const vignette = ctx.createRadialGradient(w / 2, h / 2, 20, w / 2, h / 2, Math.max(w, h) * 0.78);
@@ -45,35 +52,16 @@ export class CanvasRenderer {
     ctx.save();
     const shake = game.shake * 7;
     ctx.translate(-ox + Math.sin(now * 79) * shake, -oy + Math.cos(now * 71) * shake);
-    const worldLeft = -WORLD.width / 2;
-    const worldTop = -WORLD.height / 2;
-    const worldRight = WORLD.width / 2;
-    const worldBottom = WORLD.height / 2;
-    const left = Math.max(ox, worldLeft) - 100;
-    const top = Math.max(oy, worldTop) - 100;
-    const spacing = 84;
-    ctx.strokeStyle = "rgba(154, 140, 196, .035)";
-    ctx.lineWidth = 1;
-    const sx = Math.floor(left / spacing) * spacing;
-    const sy = Math.floor(top / spacing) * spacing;
-    const gridRight = Math.min(ox + w, worldRight) + 160;
-    const gridBottom = Math.min(oy + h, worldBottom) + 180;
-    for (let x = sx; x < gridRight; x += spacing) { ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, gridBottom); ctx.stroke(); }
-    for (let y = sy; y < gridBottom; y += spacing) { ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(gridRight, y); ctx.stroke(); }
+    this.terrain.draw(ctx, ox, oy, w, h);
 
     for (const star of this.stars) {
       const x = ((star.x * 10400 - ox * 0.24) % (w + 80) + w + 80) % (w + 80) - 40 + ox;
       const y = ((star.y * 10400 - oy * 0.24) % (h + 80) + h + 80) % (h + 80) - 40 + oy;
-      ctx.fillStyle = `rgba(196,183,226,${star.alpha * (0.72 + Math.sin(now * 1.4 + x) * 0.22)})`;
+      ctx.fillStyle = `rgba(196,183,226,${star.alpha * (0.2 + Math.sin(now * 1.4 + x) * 0.06)})`;
       ctx.beginPath(); ctx.arc(x, y, star.size, 0, TAU); ctx.fill();
     }
 
-    ctx.fillStyle = "rgba(4, 3, 9, .76)";
-    if (worldLeft > ox) ctx.fillRect(ox, oy, worldLeft - ox, h);
-    if (worldRight < ox + w) ctx.fillRect(worldRight, oy, ox + w - worldRight, h);
-    if (worldTop > oy) ctx.fillRect(ox, oy, w, worldTop - oy);
-    if (worldBottom < oy + h) ctx.fillRect(ox, worldBottom, w, oy + h - worldBottom);
-
+    this.drawFootsteps(ctx, game.elapsed);
     for (const gem of game.gems) this.drawGem(ctx, gem, now);
     for (const shot of game.projectiles) this.drawProjectile(ctx, shot);
     for (const enemy of game.enemies) this.drawEnemy(ctx, enemy, now);
@@ -101,6 +89,53 @@ export class CanvasRenderer {
       ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath(); ctx.fill();
       ctx.restore();
     }
+  }
+
+  updateFootsteps(game) {
+    const p = game.player, now = game.elapsed;
+    if (this.trackedPlayer !== p || now < this.lastStepTime) {
+      this.trackedPlayer = p;
+      this.footsteps.length = 0;
+      this.stepDistance = 0;
+      this.stepSide = 1;
+      this.lastStepX = p.x; this.lastStepY = p.y;
+    }
+    this.footsteps = this.footsteps.filter(step => now - step.born < 1.8);
+    const dx = p.x - this.lastStepX, dy = p.y - this.lastStepY;
+    const distance = Math.hypot(dx, dy);
+    if (game.state === "playing" && now > this.lastStepTime && distance > 0 && distance < 120) {
+      let next = 26 - this.stepDistance;
+      while (next <= distance) {
+        const along = next / distance, side = this.stepSide * 5;
+        this.footsteps.push({
+          x: this.lastStepX + dx * along - dy / distance * side,
+          y: this.lastStepY + dy * along + dx / distance * side,
+          angle: Math.atan2(dy, dx), born: now,
+        });
+        this.stepSide *= -1;
+        next += 26;
+      }
+      this.stepDistance = (this.stepDistance + distance) % 26;
+    } else if (distance >= 120) this.stepDistance = 0;
+    this.lastStepX = p.x; this.lastStepY = p.y; this.lastStepTime = now;
+  }
+
+  drawFootsteps(ctx, now) {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(-WORLD.width / 2, -WORLD.height / 2, WORLD.width, WORLD.height); ctx.clip();
+    for (const step of this.footsteps) {
+      const age = now - step.born, fade = Math.max(0, 1 - age / 1.8);
+      ctx.save(); ctx.translate(step.x, step.y); ctx.rotate(step.angle);
+      ctx.fillStyle = `rgba(166,151,133,${fade * .25})`;
+      ctx.beginPath(); ctx.ellipse(-4, 0, 4.5, 2, 0, 0, TAU); ctx.fill();
+      if (age < .45) {
+        ctx.fillStyle = `rgba(193,178,157,${(1 - age / .45) * .22})`;
+        ctx.beginPath(); ctx.arc(-7 - age * 10, -3 - age * 5, 1.5 + age * 3, 0, TAU); ctx.fill();
+        ctx.beginPath(); ctx.arc(-9 - age * 6, 3 + age * 4, 1 + age * 2, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
   }
 
   drawPlayer(ctx, p, now) {
