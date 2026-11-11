@@ -1,0 +1,55 @@
+{
+  "source_sha256": "9e55b5200b088adaf8e1152da04efc0d3b25e236e6baf2dee96f81e23e084966",
+  "provided_file": "真3A大作_V1.html",
+  "rea_version": "6.8.0",
+  "operation": "analyze_javascript_application",
+  "evidence_id": null,
+  "analysis_coverage": "partial",
+  "application_graph_nodes": 189,
+  "application_graph_edges": 217,
+  "semantic_graph_nodes": 20000,
+  "semantic_unknowns": 20000,
+  "parse_failures": 0,
+  "parsed_javascript_files": 1,
+  "limitations": [
+    "Alias selection expansion was conservatively bounded (maximum 512 additional selector states); selected paths remain unknown.",
+    "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+    "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+    "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+    "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+    "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+    "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code."
+  ],
+  "coverage_limits": [
+    {
+      "name": "javascript_semantic_alias_selections",
+      "unit": "items",
+      "value": 512
+    }
+  ],
+  "extraction_manifest": {
+    "operation": "inert-inline-extraction-for-REA",
+    "execution": "none",
+    "source": "真3A大作_V1.html",
+    "source_sha256": "9e55b5200b088adaf8e1152da04efc0d3b25e236e6baf2dee96f81e23e084966",
+    "extracted": [
+      {
+        "path": "index.html",
+        "bytes": 630,
+        "sha256": "4e6980c797d7649a42f4d89a68a3cfc6f6b5f8be9357b026e46bff9f325385f9"
+      },
+      {
+        "path": "bundle0.js",
+        "bytes": 1393607,
+        "sha256": "96ec824cb4f09ee11915322be8357555e79c6ff00f301774552e398555e10476",
+        "characters": 1390070
+      },
+      {
+        "path": "style0.css",
+        "bytes": 31513,
+        "sha256": "6d5fe8722fa0ed1113bf37a1fdce73fbc2519ddd28371fcb99cca19902f74c24",
+        "characters": 31502
+      }
+    ]
+  }
+}

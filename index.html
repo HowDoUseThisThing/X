@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111018">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <meta name="description" content="一款以吸血鬼幸存者玩法为灵感的独立网页版生存游戏。">
+  <title>夜潮生存 - X先生</title>
+  <link rel="stylesheet" href="src/ui/style.css">
+</head>
+<body>
+  <main id="game" aria-label="夜潮生存游戏">
+    <canvas id="world" aria-label="游戏区域"></canvas>
+    <div class="vignette" aria-hidden="true"></div>
+    <div class="intro-location" id="intro-location" aria-hidden="true"><div class="intro-mark">C · 07</div><div class="intro-lines"><small>DRIFT COAST · NIGHT 01</small><b>雾湾 · 灯塔下</b></div></div>
+    <header class="hud hud-top">
+      <div class="brand"><span class="brand-mark">✦</span><span>夜潮生存</span><small>REA LAB · X先生</small></div>
+      <div class="hud-right"><div class="clock"><small>夜潮计时</small><strong id="clock">00:00</strong></div><button class="icon-btn" id="sound" aria-label="切换声音">♫</button><button class="icon-btn" id="pause" aria-label="暂停游戏">Ⅱ</button></div>
+    </header>
+    <section class="hud meters" aria-label="玩家状态">
+      <div class="meter-row"><span class="heart">♥</span><div class="meter health"><i id="health-fill"></i></div><b id="health-text">100 / 100</b></div>
+      <div class="meter-row"><span class="xp-icon">✦</span><div class="meter xp"><i id="xp-fill"></i></div><b id="level-text">LV. 1</b></div>
+    </section>
+    <div class="wave-tag hud"><i></i> <span id="wave-text">潮汐逼近</span></div>
+    <div id="toast" class="toast" aria-live="polite"></div>
+    <div class="mobile-controls" id="mobile-controls" aria-label="触屏移动控制"><div id="stick-zone" class="stick-zone"><div class="stick-base"><i id="stick-knob"></i></div></div><button id="dash" class="dash-btn">闪避</button></div>
+    <section class="overlay is-visible" id="title-screen" aria-labelledby="title-main">
+      <div class="title-particles" aria-hidden="true"></div><p class="eyebrow">一场潮汐 · 无尽夜色</p><h1 id="title-main">月蚀<span>余烬</span></h1><p class="lead">潮声深处，群影苏醒。<br>移动、进化，在黎明前活下来。</p>
+      <button class="primary-btn" id="start">开始生存 <span>→</span></button>
+      <div class="key-hint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动 <i></i> <kbd>空格</kbd> 闪避</div>
+      <p class="credit">独立创作 · 玩法研究演示 · X先生</p>
+    </section>
+    <section class="overlay hidden" id="level-screen" aria-labelledby="level-title"><div class="modal-card level-card"><p class="eyebrow">POWER SURGE · 进化选择</p><h2 id="level-title">新的力量</h2><p class="modal-sub">选择一项，继续你的生存</p><div id="upgrade-list" class="upgrade-list"></div></div></section>
+    <section class="overlay hidden" id="pause-screen"><div class="modal-card"><p class="eyebrow">喘息片刻</p><h2>潮声未停</h2><p class="modal-sub">夜色仍在扩散，准备好再出发。</p><button class="primary-btn" id="resume">继续生存 <span>→</span></button></div></section>
+    <section class="overlay hidden" id="result-screen"><div class="modal-card result-card"><p class="eyebrow">THE NIGHT REMEMBERS</p><h2 id="result-title">夜尽</h2><p id="result-copy" class="modal-sub"></p><div class="result-stats"><div><small>存活时间</small><b id="final-time">00:00</b></div><div><small>击退暗影</small><b id="final-kills">0</b></div><div><small>抵达等级</small><b id="final-level">LV. 1</b></div></div><button class="primary-btn" id="restart">再入夜潮 <span>↻</span></button></div></section>
+    <footer class="hud footer-hint"><span>自动瞄准 · 自动攻击</span><span>X先生 · 夜潮生存</span></footer>
+  </main>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
+
+
+
