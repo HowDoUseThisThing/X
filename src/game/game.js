@@ -1,7 +1,7 @@
 import { clamp, distance, mulberry32, normalize } from "../core/math.js";
-import { WORLD, clampToWorld, isInsideWorld } from "./world.js";
+import { WORLD, clampToWorld, generateMap, isInsideWorld } from "./world.js";
 import { SpatialGrid } from "./spatial-grid.js";
-import { ACHIEVEMENTS, ALTARS, BOSSES, CHARACTERS, ENEMIES, PASSIVES, WEAPONS } from "./content.js";
+import { ACHIEVEMENTS, BOSSES, CHARACTERS, ENEMIES, PASSIVES, WEAPONS } from "./content.js";
 import { calcEchoes, defaultSave, normalizeSave } from "./progression.js";
 
 export const WORLD_SIZE = WORLD;
@@ -15,6 +15,11 @@ const weaponList = Object.values(WEAPONS);
 const passiveList = Object.values(PASSIVES);
 const HAZARD_TICK = 0.4;
 const choiceForUpgrade = item => ({ id: `${item.category}:${item.id}`, type: item.category, target: item.id, category: item.category, icon: item.icon, name: `${item.name} · 强化`, desc: item.desc, from: 1 });
+const evolutionsById = Object.fromEntries(weaponList.flatMap(weapon => Object.values(weapon.evolutions).map(recipe => [recipe.id, recipe])));
+const evolutionFor = weapon => {
+  if (!weapon || !weapon.evolved) return null;
+  return weapon.evolutionId ? evolutionsById[weapon.evolutionId] || null : WEAPONS[weapon.id].evolutions[WEAPONS[weapon.id].passive];
+};
 const pressureFor = elapsed => 1 + Math.min(4.2, elapsed / 145) + Math.max(0, elapsed - 600) / 300;
 export const ENTITY_LIMITS = Object.freeze({ enemies: 800, projectiles: 256, enemyProjectiles: 240, zones: 96, effects: 128, gems: 600, pickups: 100 });
 
@@ -45,6 +50,7 @@ export class SurvivorGame {
     this.runId = `${this.seed}:${this.runSequence}`;
     this.runMeta = { ...this.profile.meta };
     this.random = mulberry32(this.seed);
+    this.map = generateMap(this.seed);
     this.state = "title";
     this.elapsed = 0; this.kills = 0; this.spawnClock = 0; this.fireClock = 0; this.shake = 0;
     this.curse = 0; this.bossKills = 0; this.eliteKills = 0; this.chestsOpened = 0; this.evolutions = 0;
@@ -60,7 +66,7 @@ export class SurvivorGame {
     this.upgradeChoices = []; this.chestChoices = []; this.skipsRemaining = 2;
     this.collisionChecksLastUpdate = 0; this.lastAim = { x: 1, y: 0 };
     this.enemies = []; this.enemyGrid.clear();
-    this.altars = ALTARS.map(item => ({ ...item, cooldown: 0, progress: 0 }));
+    this.altars = this.map.altars.map(item => ({ ...item, cooldown: 0, progress: 0 }));
     const character = CHARACTERS[this.selectedCharacter] || CHARACTERS.ranger;
     this.character = character;
     this.build = { weapons: [{ id: character.weapon, level: 1, evolved: false }], passives: {} };
@@ -70,6 +76,7 @@ export class SurvivorGame {
       projectileSize: 5, facing: -Math.PI / 2, pierce: 0, magnet: 96, invulnerable: 0, dashCooldown: 0,
       dashTime: 0, dashCooldownMax: 2.1, xpMultiplier: 1, damageMultiplier: 1, cooldownMultiplier: 1,
       areaMultiplier: 1, pickupChance: 0.04, baseHealth: character.health, baseSpeed: character.speed, characterId: character.id,
+      shield: 0, shieldTime: 0,
     };
     this.rerollsRemaining = 1 + (character.id === "ranger" ? 1 : 0) + this.profile.meta.fate;
     this.recalculateStats(false);
@@ -120,12 +127,12 @@ export class SurvivorGame {
     const p = this.player;
     const level = id => this.build.passives[id] || 0;
     const meta = this.runMeta;
-    p.damageMultiplier = (1 + 0.1 * level("might")) * (1 + meta.ember * 0.03);
+    p.damageMultiplier = (1 + 0.1 * level("might")) * (1 + meta.ember * 0.03) * (1 + 0.08 * level("focus"));
     p.cooldownMultiplier = 1 - 0.07 * level("tempo");
     p.areaMultiplier = (1 + 0.1 * level("area")) * (this.character.area || 1);
     p.xpMultiplier = (1 + 0.05 * level("magnet")) * (this.character.xp || 1) * (1 + meta.light * 0.03);
     const previousMax = p.maxHealth || 1;
-    p.maxHealth = Math.max(1, Math.round((p.baseHealth + level("vitality") * 15) * (1 + meta.life * 0.03)));
+    p.maxHealth = Math.max(1, Math.round((p.baseHealth + level("vitality") * 15 + level("ward") * 5) * (1 + meta.life * 0.03)));
     p.health = Math.min(p.maxHealth, healVitality ? p.health + 15 : p.health * p.maxHealth / previousMax);
     p.speed = p.baseSpeed * (1 + 0.06 * level("agility"));
     p.magnet = 96 * (1 + 0.25 * level("magnet"));
@@ -138,6 +145,9 @@ export class SurvivorGame {
     p.projectileCount = arrow?.evolved ? 4 : 1 + (arrowLevel >= 2 ? 1 : 0) + (arrowLevel >= 4 ? 1 : 0);
     p.pierce = arrow?.evolved ? 2 : arrowLevel >= 3 ? 1 : 0;
     p.projectileSize = 5 * Math.pow(1.08, level("area"));
+    p.rangeMultiplier = (1 + 0.06 * level("focus")) * (this.character.id === "sentinel" ? 1.2 : 1);
+    p.projectileSpeedMultiplier = this.character.id === "sentinel" ? 1.15 : 1;
+    p.invulnerabilityMultiplier = 1 + 0.06 * level("ward");
   }
 
   applyChoice(choice) {
@@ -156,9 +166,11 @@ export class SurvivorGame {
       this.build.passives[choice.target] = current + 1;
     } else if (choice.type === "evolve") {
       const weapon = this.build.weapons.find(item => item.id === choice.target);
-      if (!weapon || weapon.evolved || weapon.level < WEAPONS[weapon.id].maxLevel) return false;
-      if ((this.build.passives[WEAPONS[weapon.id].passive] || 0) < 3) return false;
-      weapon.evolved = true; this.evolutions += 1;
+      const definition = weapon && WEAPONS[weapon.id], recipe = definition?.evolutions?.[choice.passive || definition.passive];
+      if (!weapon || weapon.evolved || weapon.level < definition.maxLevel || !recipe) return false;
+      const passive = choice.passive || definition.passive;
+      if ((this.build.passives[passive] || 0) < 3) return false;
+      weapon.evolved = true; weapon.evolutionId = recipe.id; this.evolutions += 1;
     } else return false;
     this.recalculateStats(choice.type === "passive" && choice.target === "vitality");
     this.checkAchievements(); return true;
@@ -171,20 +183,25 @@ export class SurvivorGame {
     const owned = this.build.weapons.find(item => item.id === choice.target);
     const current = owned?.level || this.build.passives[choice.target] || 0;
     if (choice.type === "evolve") {
-      const effects = { moonArrow: "命中分裂两枚追踪碎片", orbitBlade: "旋转刀刃留下切割轨迹", tideNova: "爆发后追加 65% 伤害的延迟波", chainSpark: "跳跃终点追加 50% 伤害的范围落雷", graveField: "领域缓慢跟随，站在领域内每秒回复 1.2 生命", echoBoomerang: "返程结束分裂三枚回声弹" };
-      return `${definition.name} Lv5 + ${PASSIVES[definition.passive].name} Lv3 ✓；${effects[choice.target]}。占原武器槽。`;
+      const passive = choice.passive || definition.passive, recipe = definition.evolutions?.[passive];
+      if (!recipe) return "合成配方暂不可用";
+      const readyCount = Object.keys(definition.evolutions).filter(id => (this.build.passives[id] || 0) >= 3).length;
+      return `${definition.name} Lv5 + ${PASSIVES[passive].name} Lv3 → ${recipe.name}：${recipe.desc}。\n${readyCount > 1 ? "两条配方均满足，本次选择这一条。" : ""}占原武器槽；被动不消耗；本武器仅合成一次。`;
     }
     const next = current + 1;
     if (choice.type === "passive") {
       const values = {
-        might: [`伤害 +${current * 10}% → +${next * 10}%`, "月痕箭"],
-        tempo: [`间隔 -${current * 7}% → -${next * 7}%`, "潮汐新星"],
-        area: [`范围 +${current * 10}% → +${next * 10}%；弹体 +${current * 8}% → +${next * 8}%`, "环葬刃"],
-        vitality: [`生命 +${current * 15} → +${next * 15}；立即回复 15`, "墓土领域"],
-        agility: [`移速 +${current * 6}% → +${next * 6}%；闪避冷却 -${current * 4}% → -${next * 4}%`, "回声轮"],
-        magnet: [`吸取 +${current * 25}% → +${next * 25}%；经验 +${current * 5}% → +${next * 5}%`, "引雷针"],
+        might: [`伤害 +${current * 10}% → +${next * 10}%`, "月痕箭 / 回声轮"],
+        tempo: [`间隔 -${current * 7}% → -${next * 7}%`, "月痕箭 / 潮汐新星"],
+        area: [`范围 +${current * 10}% → +${next * 10}%；弹体 +${current * 8}% → +${next * 8}%`, "环葬刃 / 霜月环"],
+        vitality: [`生命 +${current * 15} → +${next * 15}；立即回复 15`, "环葬刃 / 墓土领域"],
+        agility: [`移速 +${current * 6}% → +${next * 6}%；闪避冷却 -${current * 4}% → -${next * 4}%`, "引雷针 / 回声轮"],
+        magnet: [`吸取 +${current * 25}% → +${next * 25}%；经验 +${current * 5}% → +${next * 5}%`, "引雷针 / 墓土领域"],
+        focus: [`伤害 +${current * 8}% → +${next * 8}%；射程 +${current * 6}% → +${next * 6}%`, "潮汐新星 / 星陨枪"],
+        ward: [`无敌时间 +${current * 6}% → +${next * 6}%；生命 +${current * 5} → +${next * 5}`, "星陨枪 / 霜月环"],
       };
-      return `Lv${current} → Lv${next} · ${values[choice.target][0]}。Lv3 配合 ${values[choice.target][1]} Lv5 可进化。`;
+      const recipes = weaponList.filter(item => item.passives.includes(choice.target)).map(item => `${item.name} Lv5 + ${definition.name} Lv3 → ${item.evolutions[choice.target].name}：${item.evolutions[choice.target].desc}`);
+      return `Lv${current} → Lv${next} · ${values[choice.target][0]}。\n${recipes.join("\n")}\n被动不消耗，可分别协同两把武器；每把武器仅合成一次。`;
     }
     const damageAt = level => level ? Math.round(definition.damage * Math.pow(1 + definition.growth, level - 1) * this.player.damageMultiplier) : 0;
     const behavior = {
@@ -195,23 +212,37 @@ export class SurvivorGame {
       graveField: "敌群密集处生成持续领域；每两级多一区域，每级半径 +8",
       echoBoomerang: "穿透飞出再返回，可往返命中；Lv3 多一枚，每级距离 +30",
     };
-    return `Lv${current} → Lv${next} · ${choice.target === "graveField" ? "每秒伤害" : "伤害"} ${damageAt(current)} → ${damageAt(next)}。${behavior[choice.target]}。进化：${definition.name} Lv5 + ${PASSIVES[definition.passive].name} Lv3。`;
+    const recipes = Object.entries(definition.evolutions).map(([id, recipe]) => `${definition.name} Lv5 + ${PASSIVES[id].name} Lv3 → ${recipe.name}：${recipe.desc}`);
+    return `Lv${current} → Lv${next} · ${choice.target === "graveField" ? "每秒伤害" : "伤害"} ${damageAt(current)} → ${damageAt(next)}。${behavior[choice.target] || definition.desc}。\n${recipes.join("\n")}\n两条满足时任选其一；被动不消耗，每把武器仅合成一次。`;
   }
 
   rollUpgradeChoices(chest = false) {
     const choices = [];
     const add = choice => { if (choices.length < 3 && !choices.some(item => item.id === choice.id)) choices.push(choice); };
+    const evolutionGroups = [];
     for (const weapon of this.build.weapons) {
       if (weapon.evolved || weapon.level < WEAPONS[weapon.id].maxLevel) continue;
-      if ((this.build.passives[WEAPONS[weapon.id].passive] || 0) >= 3) add({ id: `evolve:${weapon.id}`, type: "evolve", target: weapon.id, category: "evolution", icon: "✦", name: WEAPONS[weapon.id].evolutionName, desc: `进化 ${WEAPONS[weapon.id].name}；保留武器槽`, evolved: true });
+      const group = [];
+      for (const [passive, recipe] of Object.entries(WEAPONS[weapon.id].evolutions || {})) {
+        if ((this.build.passives[passive] || 0) < 3) continue;
+        group.push({ id: passive === WEAPONS[weapon.id].passive ? `evolve:${weapon.id}` : `evolve:${weapon.id}:${passive}`, type: "evolve", target: weapon.id, passive, evolutionId: recipe.id, category: "evolution", icon: "✦", name: recipe.name, desc: `合成 ${WEAPONS[weapon.id].name} + ${PASSIVES[passive].name}；保留武器槽`, evolved: true });
+      }
+      if (group.length) evolutionGroups.push(group);
     }
+    // Keep a weapon's two ready branches together; shuffle weapon groups so
+    // the three-card cap and rerolls never permanently hide a later recipe.
+    for (let i = evolutionGroups.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(this.random() * (i + 1));
+      [evolutionGroups[i], evolutionGroups[j]] = [evolutionGroups[j], evolutionGroups[i]];
+    }
+    for (const group of evolutionGroups) if (choices.length + group.length <= 3) group.forEach(add);
     const pool = [];
     for (const weapon of this.build.weapons) if (!weapon.evolved && weapon.level < WEAPONS[weapon.id].maxLevel) pool.push(choiceForUpgrade(WEAPONS[weapon.id]));
     for (const [id, level] of Object.entries(this.build.passives)) if (level < PASSIVES[id].maxLevel) pool.push(choiceForUpgrade(PASSIVES[id]));
     if (!chest && this.activeWeapons.length < 4) for (const item of weaponList) if (!this.build.weapons.some(w => w.id === item.id)) pool.push({ id: `newWeapon:${item.id}`, type: "weapon", target: item.id, category: "weapon", icon: item.icon, name: `新武器 · ${item.name}`, desc: item.desc, isNew: true });
     if (!chest && Object.keys(this.build.passives).length < 4) for (const item of passiveList) if (!this.build.passives[item.id]) pool.push({ id: `newPassive:${item.id}`, type: "passive", target: item.id, category: "passive", icon: item.icon, name: `新被动 · ${item.name}`, desc: item.desc, isNew: true });
     const available = [...pool];
-    const weight = choice => (choice.isNew ? 1 : 2) * (choice.type === "passive" && this.activeWeapons.some(weapon => WEAPONS[weapon.id].passive === choice.target) ? 1.4 : 1);
+    const weight = choice => (choice.isNew ? 1 : 2) * (choice.type === "passive" && this.activeWeapons.some(weapon => WEAPONS[weapon.id].passives.includes(choice.target)) ? 1.4 : 1);
     while (choices.length < 3 && available.length) {
       let ticket = this.random() * available.reduce((sum, item) => sum + weight(item), 0);
       const index = Math.max(0, available.findIndex(item => (ticket -= weight(item)) < 0));
@@ -301,6 +332,8 @@ export class SurvivorGame {
     p.invulnerable = Math.max(0, p.invulnerable - dt);
     p.dashCooldown = Math.max(0, p.dashCooldown - dt);
     p.dashTime = Math.max(0, p.dashTime - dt);
+    p.shieldTime = Math.max(0, p.shieldTime - dt);
+    if (p.shieldTime === 0) p.shield = 0;
     for (const altar of this.altars) altar.cooldown = Math.max(0, altar.cooldown - dt);
     for (const key of Object.keys(this.weaponClocks)) this.weaponClocks[key] -= dt;
     for (const [id, value] of this.orbitHits) { if (value <= dt) this.orbitHits.delete(id); else this.orbitHits.set(id, value - dt); }
@@ -325,7 +358,7 @@ export class SurvivorGame {
     if (this.state !== "playing") return;
     this.updateEnemies(dt);
     if (this.state !== "playing") return;
-    if (this.zones.some(zone => zone.tick + dt >= HAZARD_TICK) || this.effects.some(effect => effect.delayed > 0 && effect.delayed <= dt)) this.enemyGrid.rebuild(this.enemies);
+    if (this.zones.some(zone => zone.tick + dt >= HAZARD_TICK || zone.bloomDamage && zone.life <= dt) || this.effects.some(effect => effect.delayed > 0 && effect.delayed <= dt)) this.enemyGrid.rebuild(this.enemies);
     this.updateZones(dt);
     if (this.state !== "playing") return;
     this.updateEffects(dt);
@@ -442,19 +475,36 @@ export class SurvivorGame {
   }
 
   fireVolley(target) {
-    const p = this.player, base = Math.atan2(target.y - p.y, target.x - p.x), count = Math.max(1, p.projectileCount), spread = count > 1 ? 0.16 : 0;
+    const p = this.player, base = Math.atan2(target.y - p.y, target.x - p.x), effect = evolutionFor(this.arrowState)?.effect;
+    const count = Math.max(1, p.projectileCount) + (effect === "arrowBurst" ? 2 : 0), spread = count > 1 ? 0.16 : 0;
     for (let i = 0; i < count; i += 1) {
       const angle = base + (i - (count - 1) / 2) * spread;
-      this.addEntity("projectiles", { x: p.x, y: p.y, vx: Math.cos(angle) * p.projectileSpeed, vy: Math.sin(angle) * p.projectileSpeed, radius: p.projectileSize, damage: p.damage, life: 1.3, pierce: p.pierce, kind: "arrow", split: Boolean(this.arrowState?.evolved), hitIds: new Set(), trail: [] });
+      this.addEntity("projectiles", { x: p.x, y: p.y, vx: Math.cos(angle) * p.projectileSpeed * p.projectileSpeedMultiplier, vy: Math.sin(angle) * p.projectileSpeed * p.projectileSpeedMultiplier, radius: p.projectileSize, damage: p.damage, life: 1.3 * p.rangeMultiplier, pierce: p.pierce, kind: effect === "arrowBurst" ? "fragment" : "arrow", split: effect === "arrowSplit", hitIds: new Set(), trail: [] });
     }
     this.burst(p.x + Math.cos(base) * 18, p.y + Math.sin(base) * 18, "#ffd59e", 2);
+  }
+
+  fireFan(weapon) {
+    const definition = WEAPONS[weapon.id], level = weapon.level + (weapon.evolved ? 1 : 0), target = this.nearestEnemy();
+    const base = target ? Math.atan2(target.y - this.player.y, target.x - this.player.x) : this.player.facing;
+    const count = definition.shots + (level >= 2 ? 1 : 0) + (level >= 4 ? 1 : 0), spread = 0.22;
+    for (let i = 0; i < count; i += 1) {
+      const angle = base + (i - (count - 1) / 2) * spread;
+      this.addEntity("projectiles", { x: this.player.x, y: this.player.y, vx: Math.cos(angle) * definition.speed * this.player.projectileSpeedMultiplier, vy: Math.sin(angle) * definition.speed * this.player.projectileSpeedMultiplier, radius: definition.radius * this.player.areaMultiplier, damage: this.weaponDamage(weapon.id), life: 1.5 * this.player.rangeMultiplier, pierce: definition.pierce + (level >= 3 ? 1 : 0), kind: "lance", color: definition.color, starRain: evolutionFor(weapon)?.effect === "lanceRain", hitIds: new Set(), trail: [] });
+    }
+    if (evolutionFor(weapon)?.effect === "lanceWard") {
+      this.player.shield = 24; this.player.shieldTime = 0.7;
+      this.addEntity("effects", { kind: "ward", x: this.player.x, y: this.player.y, radius: 42, life: 0.7, maxLife: 0.7, color: "#f1e4a8" });
+    }
   }
 
   updateOtherWeapons(dt = 1 / 60) {
     for (const weapon of this.activeWeapons) {
       if (weapon.id === "orbitBlade") { this.fireOrbit(weapon, dt); continue; }
       if (weapon.id === "moonArrow" || (this.weaponClocks[weapon.id] ?? 0) > 0) continue;
-      if (weapon.id === "tideNova") this.fireNova(weapon);
+      if (weapon.id === "starLance") this.fireFan(weapon);
+      else if (weapon.id === "tideNova") this.fireNova(weapon);
+      else if (weapon.id === "frostHalo") this.fireFrost(weapon);
       else if (weapon.id === "chainSpark" && this.enemies.length) this.fireChain(weapon);
       else if (weapon.id === "graveField") this.fireGraveField(weapon);
       else if (weapon.id === "echoBoomerang") this.fireBoomerang(weapon);
@@ -495,25 +545,52 @@ export class SurvivorGame {
         if (distance(blade.x, blade.y, enemy.x, enemy.y) > blade.radius + enemy.radius || (this.orbitHits.get(enemy.id) || 0) > 0) continue;
         this.orbitHits.set(enemy.id, this.weaponInterval("orbitBlade"));
         this.damageEnemy(enemy, damage, { x: enemy.x, y: enemy.y, color: WEAPONS.orbitBlade.color, amount: 4 });
+        if (evolutionFor(weapon)?.effect === "bladePulse") this.addEntity("effects", { kind: "bladePulse", x: blade.x, y: blade.y, radius: 38 * this.player.areaMultiplier, life: 0.4, maxLife: 0.4, delayed: 0.08, damage: damage * 0.35, color: "#eaa6d1" });
       }
-      if (weapon.evolved && this.orbitTrailClock <= 0) this.addEntity("zones", { kind: "blade", x: blade.x, y: blade.y, radius: 18, life: 0.7, maxLife: 0.7, tick: HAZARD_TICK, damage: damage * 0.18, color: WEAPONS.orbitBlade.color });
+      if (evolutionFor(weapon)?.effect === "bladeTrail" && this.orbitTrailClock <= 0) this.addEntity("zones", { kind: "blade", x: blade.x, y: blade.y, radius: 18, life: 0.7, maxLife: 0.7, tick: HAZARD_TICK, damage: damage * 0.18, color: WEAPONS.orbitBlade.color });
     }
     if (this.orbitTrailClock <= 0) this.orbitTrailClock = 0.18;
   }
 
   fireNova(weapon) {
     const level = weapon.level + (weapon.evolved ? 1 : 0);
-    const radius = (WEAPONS.tideNova.radius + (level - 1) * 14) * this.player.areaMultiplier;
+    const definition = WEAPONS[weapon.id], radius = (definition.radius + (level - 1) * 14) * this.player.areaMultiplier;
     const damage = this.weaponDamage(weapon.id);
-    this.addEntity("effects", { kind: "nova", x: this.player.x, y: this.player.y, radius, life: 0.45, maxLife: 0.45, color: WEAPONS.tideNova.color });
-    this.damageCircle(this.player.x, this.player.y, radius, damage, WEAPONS.tideNova.color, 12 + level * 3);
-    if (weapon.evolved) this.addEntity("effects", { kind: "nova", x: this.player.x, y: this.player.y, radius: radius * 1.25, life: 0.8, maxLife: 0.8, color: "#d1fff8", damage: damage * 0.65, delayed: 0.24 });
+    const recipe = evolutionFor(weapon), color = definition.color;
+    this.addEntity("effects", { kind: "nova", x: this.player.x, y: this.player.y, radius, life: 0.45, maxLife: 0.45, color });
+    this.damageCircle(this.player.x, this.player.y, radius, damage, color, 12 + level * 3);
+    if (recipe?.effect === "novaDelay") this.addEntity("effects", { kind: "nova", x: this.player.x, y: this.player.y, radius: radius * 1.25, life: 0.8, maxLife: 0.8, color: "#d1fff8", damage: damage * 0.65, delayed: 0.24 });
+    if (recipe?.effect === "novaCrown") {
+      this.damageCircle(this.player.x, this.player.y, radius * 0.55, damage * 0.85, "#fff1b0", 5);
+      this.addEntity("effects", { kind: "crown", x: this.player.x, y: this.player.y, radius: radius * 0.55, life: 0.55, maxLife: 0.55, color: "#fff1b0" });
+    }
+  }
+
+  slowCircle(x, y, radius, amount, duration) {
+    for (const index of this.enemyGrid.query(x, y, radius)) {
+      const enemy = this.enemyGrid.items[index];
+      if (enemy.hp <= 0 || distance(x, y, enemy.x, enemy.y) > radius + enemy.radius) continue;
+      enemy.slowFactor = Math.min(enemy.slowUntil > this.elapsed ? enemy.slowFactor || 1 : 1, enemy.boss ? Math.max(0.8, amount) : amount);
+      enemy.slowUntil = Math.max(enemy.slowUntil || 0, this.elapsed + duration);
+    }
+  }
+
+  fireFrost(weapon) {
+    const p = this.player, definition = WEAPONS.frostHalo;
+    const radius = (definition.radius + (weapon.level - 1) * 12) * p.areaMultiplier, damage = this.weaponDamage(weapon.id);
+    this.damageCircle(p.x, p.y, radius, damage, definition.color);
+    this.slowCircle(p.x, p.y, radius, 0.6, 1.2);
+    this.addEntity("effects", { kind: "frost", x: p.x, y: p.y, radius, life: 0.65, maxLife: 0.65, color: definition.color });
+    if (weapon.level >= 3) this.addEntity("effects", { kind: "frost", x: p.x, y: p.y, radius: radius * 1.3, life: 0.7, maxLife: 0.7, color: definition.color, damage: damage * 0.3, delayed: 0.2, slow: 0.6, slowDuration: 1.2 });
+    const effect = evolutionFor(weapon)?.effect;
+    if (effect === "frostRing") this.addEntity("zones", { kind: "frost", x: p.x, y: p.y, radius: radius * 0.85, life: 2.8, maxLife: 2.8, tick: 0, damage: damage * 0.28, color: "#8bf2e3", slow: 0.5 });
+    if (effect === "moonPrison") this.addEntity("effects", { kind: "prison", x: p.x, y: p.y, radius: radius * 1.6, life: 0.8, maxLife: 0.8, color: "#d3b9ff", damage: damage * 0.75, delayed: 0.4, slow: 0.25, slowDuration: 1.8 });
   }
 
   fireChain(weapon) {
     const level = weapon.level + (weapon.evolved ? 1 : 0);
     const jumps = WEAPONS.chainSpark.jumps + (level >= 2 ? 1 : 0) + (level >= 4 ? 1 : 0);
-    const range = WEAPONS.chainSpark.range * this.player.areaMultiplier;
+    const range = WEAPONS.chainSpark.range * this.player.areaMultiplier * this.player.rangeMultiplier;
     let current = this.nearestEnemy();
     if (!current || distance(this.player.x, this.player.y, current.x, current.y) > range) return;
     const points = [{ x: this.player.x, y: this.player.y }], hit = new Set();
@@ -528,7 +605,17 @@ export class SurvivorGame {
         const d = distance(current.x, current.y, enemy.x, enemy.y);
         if (d <= WEAPONS.chainSpark.jump * this.player.areaMultiplier && d < best) { best = d; next = enemy; }
       }
-      if (weapon.evolved && (i === jumps || !next)) this.addEntity("zones", { kind: "lightning", x: current.x, y: current.y, radius: 45 * this.player.areaMultiplier, life: 0.35, maxLife: 0.35, tick: HAZARD_TICK, damage: this.weaponDamage(weapon.id) * 0.5, color: "#b9f5ff" });
+      const effect = evolutionFor(weapon)?.effect;
+      if (effect === "chainZone" && (i === jumps || !next)) this.addEntity("zones", { kind: "lightning", x: current.x, y: current.y, radius: 45 * this.player.areaMultiplier, life: 0.35, maxLife: 0.35, tick: HAZARD_TICK, damage: this.weaponDamage(weapon.id) * 0.5, color: "#b9f5ff" });
+      if (effect === "chainFork" && (i === jumps || !next)) {
+        const branches = this.enemyGrid.query(current.x, current.y, 190 * this.player.rangeMultiplier).map(index => this.enemyGrid.items[index])
+          .filter(enemy => enemy.hp > 0 && !hit.has(enemy.id) && distance(current.x, current.y, enemy.x, enemy.y) <= 190 * this.player.rangeMultiplier)
+          .sort((a, b) => distance(current.x, current.y, a.x, a.y) - distance(current.x, current.y, b.x, b.y)).slice(0, 2);
+        for (const enemy of branches) {
+          this.damageEnemy(enemy, this.weaponDamage(weapon.id) * 0.65, { color: "#9dffe0" });
+          this.addEntity("effects", { kind: "chain", points: [{ x: current.x, y: current.y }, { x: enemy.x, y: enemy.y }], life: 0.35, maxLife: 0.35, color: "#9dffe0" });
+        }
+      }
       current = next;
     }
     this.addEntity("effects", { kind: "chain", points, life: 0.25, maxLife: 0.25, color: WEAPONS.chainSpark.color });
@@ -547,9 +634,10 @@ export class SurvivorGame {
     }
     for (let i = 0; i < areas; i += 1) {
       this.addEntity("zones", {
-        kind: weapon.evolved ? "graveEvolved" : "grave", x: target.x + (i ? (this.random() - 0.5) * radius * 2.2 : 0), y: target.y + (i ? (this.random() - 0.5) * radius * 2.2 : 0),
+        kind: evolutionFor(weapon)?.effect === "fieldFollow" ? "graveEvolved" : "grave", x: target.x + (i ? (this.random() - 0.5) * radius * 2.2 : 0), y: target.y + (i ? (this.random() - 0.5) * radius * 2.2 : 0),
         radius, life: WEAPONS.graveField.duration, maxLife: WEAPONS.graveField.duration, tick: 0,
         damage: this.weaponDamage(weapon.id) * 0.4, color: WEAPONS.graveField.color,
+        bloomDamage: evolutionFor(weapon)?.effect === "fieldBloom" ? this.weaponDamage(weapon.id) * 1.6 : 0,
       });
     }
   }
@@ -559,12 +647,14 @@ export class SurvivorGame {
     const count = WEAPONS.echoBoomerang.count + (level >= 3 ? 1 : 0);
     const target = this.nearestEnemy();
     const base = target ? Math.atan2(target.y - this.player.y, target.x - this.player.x) : this.player.facing;
+    const speed = WEAPONS.echoBoomerang.speed * this.player.projectileSpeedMultiplier;
+    const maxTravel = (WEAPONS.echoBoomerang.distance + (level - 1) * 30) * this.player.rangeMultiplier;
     for (let i = 0; i < count; i += 1) {
       const angle = base + (i - (count - 1) / 2) * 0.42;
       this.addEntity("projectiles", {
-        kind: "boomerang", x: this.player.x, y: this.player.y, vx: Math.cos(angle) * WEAPONS.echoBoomerang.speed, vy: Math.sin(angle) * WEAPONS.echoBoomerang.speed,
-        radius: 10 * this.player.areaMultiplier, damage: this.weaponDamage(weapon.id), life: 3, travel: 0,
-        maxTravel: WEAPONS.echoBoomerang.distance + (level - 1) * 30, returning: false, hitIds: new Set(), trail: [], echoSplit: weapon.evolved, splitCount: 0,
+        kind: "boomerang", x: this.player.x, y: this.player.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, speed,
+        radius: 10 * this.player.areaMultiplier, damage: this.weaponDamage(weapon.id), life: Math.max(3, maxTravel * 2 / speed + 1), travel: 0,
+        maxTravel, returning: false, hitIds: new Set(), trail: [], echoSplit: evolutionFor(weapon)?.effect === "boomerangSplit", echoBurst: evolutionFor(weapon)?.effect === "boomerangBurst", splitCount: 0,
       });
     }
   }
@@ -587,8 +677,9 @@ export class SurvivorGame {
         if (target) {
           const direction = normalize(target.x - shot.x, target.y - shot.y);
           const turn = Math.min(1, dt * 8);
-          const velocity = normalize(shot.vx * (1 - turn) + direction.x * 420 * turn, shot.vy * (1 - turn) + direction.y * 420 * turn);
-          shot.vx = velocity.x * 420; shot.vy = velocity.y * 420;
+          const speed = shot.speed || 420 * this.player.projectileSpeedMultiplier;
+          const velocity = normalize(shot.vx * (1 - turn) + direction.x * speed * turn, shot.vy * (1 - turn) + direction.y * speed * turn);
+          shot.vx = velocity.x * speed; shot.vy = velocity.y * speed;
         }
       }
       shot.x += shot.vx * dt; shot.y += shot.vy * dt; shot.life -= dt;
@@ -603,11 +694,16 @@ export class SurvivorGame {
           shot.hitIds.add(enemy.id); enemy.hp -= shot.damage; enemy.hitFlash = 0.12;
           this.shake = Math.max(this.shake, 0.12); this.burst(shot.x, shot.y, enemy.color, 4);
           if (shot.split) this.spawnArrowFragments(shot, enemy, shot.damage * 0.35, 2);
+          if (shot.starRain) {
+            shot.starRain = false;
+            for (const side of [-1, 1]) this.addEntity("effects", { kind: "starfall", x: enemy.x + side * 18, y: enemy.y, radius: 34 * this.player.areaMultiplier, life: 0.65, maxLife: 0.65, delayed: side < 0 ? 0.18 : 0.32, damage: shot.damage * 0.45, color: "#fff1a8" });
+          }
           if (enemy.hp <= 0) this.killEnemy(enemy);
           if (shot.pierce > 0) shot.pierce -= 1; else { consumed = true; break; }
         }
       }
-      if (consumed || shot.life <= 0 || Math.abs(shot.x - this.player.x) > 1000 || Math.abs(shot.y - this.player.y) > 1000) this.projectiles.splice(i, 1);
+      const maxDistance = 1000 * Math.max(1, this.player.rangeMultiplier);
+      if (consumed || shot.life <= 0 || Math.abs(shot.x - this.player.x) > maxDistance || Math.abs(shot.y - this.player.y) > maxDistance) this.projectiles.splice(i, 1);
     }
   }
 
@@ -618,25 +714,34 @@ export class SurvivorGame {
       if (shot.travel >= shot.maxTravel) { shot.returning = true; shot.hitIds.clear(); }
     } else {
       const direction = normalize(this.player.x - shot.x, this.player.y - shot.y);
-      shot.x += direction.x * WEAPONS.echoBoomerang.speed * dt; shot.y += direction.y * WEAPONS.echoBoomerang.speed * dt;
+      shot.x += direction.x * (shot.speed || WEAPONS.echoBoomerang.speed) * dt; shot.y += direction.y * (shot.speed || WEAPONS.echoBoomerang.speed) * dt;
       if (distance(shot.x, shot.y, this.player.x, this.player.y) < this.player.radius + 12) {
         if (shot.echoSplit && !shot.splitCount) {
           shot.splitCount = 1;
           for (let i = 0; i < 3; i += 1) {
             const angle = i / 3 * TAU;
-            this.addEntity("projectiles", { x: shot.x, y: shot.y, vx: Math.cos(angle) * 500, vy: Math.sin(angle) * 500, radius: 6, damage: shot.damage * 0.45, life: 0.7, pierce: 1, hitIds: new Set(), trail: [] });
+            const speed = 500 * this.player.projectileSpeedMultiplier;
+            this.addEntity("projectiles", { x: shot.x, y: shot.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, radius: 6, damage: shot.damage * 0.45, life: 0.7 * this.player.rangeMultiplier, pierce: 1, hitIds: new Set(), trail: [] });
           }
         }
         shot.remove = true; return;
       }
     }
     shot.trail.push({ x: shot.x, y: shot.y }); if (shot.trail.length > 8) shot.trail.shift();
+    let returnBurst = null;
     const candidates = this.enemyGrid.query(shot.x, shot.y, shot.radius);
     for (const index of candidates) {
       const enemy = this.enemyGrid.items[index];
       if (shot.hitIds.has(enemy.id) || distance(shot.x, shot.y, enemy.x, enemy.y) > shot.radius + enemy.radius) continue;
       shot.hitIds.add(enemy.id); enemy.hp -= shot.damage; enemy.hitFlash = 0.12; this.burst(shot.x, shot.y, enemy.color, 4);
+      if (shot.returning && shot.echoBurst && !shot.burstDone) { shot.burstDone = true; returnBurst = { x: enemy.x, y: enemy.y }; }
       if (enemy.hp <= 0) this.killEnemy(enemy);
+    }
+    // Querying the blast only after traversal preserves the shared query buffer.
+    if (returnBurst) {
+      const radius = 70 * this.player.areaMultiplier;
+      this.damageCircle(returnBurst.x, returnBurst.y, radius, shot.damage * 0.7, "#ffce98");
+      this.addEntity("effects", { kind: "echoBurst", ...returnBurst, radius, life: 0.5, maxLife: 0.5, color: "#ffce98" });
     }
     if (shot.life <= 0) shot.remove = true;
   }
@@ -644,7 +749,8 @@ export class SurvivorGame {
   spawnArrowFragments(shot, enemy, damage, count) {
     for (let i = 0; i < count; i += 1) {
       const angle = Math.atan2(enemy.y - shot.y, enemy.x - shot.x) + (i ? 0.7 : -0.7);
-      this.addEntity("projectiles", { x: enemy.x, y: enemy.y, vx: Math.cos(angle) * 420, vy: Math.sin(angle) * 420, radius: 4 * this.player.projectileSize / 5, damage, life: 0.8, pierce: 0, kind: "fragment", hitIds: new Set([enemy.id]), trail: [] });
+      const speed = 420 * this.player.projectileSpeedMultiplier;
+      this.addEntity("projectiles", { x: enemy.x, y: enemy.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, radius: 4 * this.player.projectileSize / 5, damage, life: 0.8 * this.player.rangeMultiplier, pierce: 0, kind: "fragment", hitIds: new Set([enemy.id]), trail: [] });
     }
   }
 
@@ -729,6 +835,7 @@ export class SurvivorGame {
           if (enemy.stateClock <= 0) { enemy.state = "chase"; speed = enemy.speed; }
         }
       }
+      if (enemy.slowUntil > this.elapsed) speed *= enemy.slowFactor;
       const position = clampToWorld(enemy.x + moveX * speed * dt + (enemy.knockbackX || 0), enemy.y + moveY * speed * dt + (enemy.knockbackY || 0), enemy.radius);
       enemy.knockbackX = 0; enemy.knockbackY = 0;
       enemy.x = position.x; enemy.y = position.y;
@@ -798,7 +905,9 @@ export class SurvivorGame {
   hurtPlayer(amount) {
     const p = this.player;
     if (p.invulnerable > 0 || this.state !== "playing") return;
-    p.health = Math.max(0, p.health - amount); p.invulnerable = 0.58; this.shake = 0.75;
+    const absorbed = p.shieldTime > 0 ? Math.min(p.shield, amount) : 0;
+    p.shield -= absorbed;
+    p.health = Math.max(0, p.health - (amount - absorbed)); p.invulnerable = 0.58 * p.invulnerabilityMultiplier; this.shake = 0.75;
     this.burst(p.x, p.y, "#ff7181", 14);
     if (p.health <= 0) { this.finishRun(true, "died"); this.state = "gameover"; }
   }
@@ -809,7 +918,14 @@ export class SurvivorGame {
     for (let i = this.zones.length - 1; i >= 0; i -= 1) {
       const zone = this.zones[i];
       zone.life -= dt;
-      if (zone.life <= 0) { this.zones.splice(i, 1); continue; }
+      if (zone.life <= 0) {
+        this.zones.splice(i, 1);
+        if (zone.bloomDamage) {
+          this.damageCircle(zone.x, zone.y, zone.radius * 1.65, zone.bloomDamage, "#d5ed8b");
+          this.addEntity("effects", { kind: "bloom", x: zone.x, y: zone.y, radius: zone.radius * 1.65, life: 0.7, maxLife: 0.7, color: "#d5ed8b" });
+        }
+        continue;
+      }
       if (!zone.tick) zone.tick = 0;
       zone.tick += dt;
       if (zone.kind === "graveEvolved") {
@@ -822,6 +938,7 @@ export class SurvivorGame {
       if (zone.hostile && distance(zone.x, zone.y, p.x, p.y) < zone.radius + p.radius) this.hurtPlayer(zone.damage);
       if (this.state !== "playing") return;
       this.damageCircle(zone.x, zone.y, zone.radius, zone.damage, zone.color);
+      if (zone.slow) this.slowCircle(zone.x, zone.y, zone.radius, zone.slow, 0.65);
     }
     if (healing) p.health = Math.min(p.maxHealth, p.health + 1.2 * dt);
   }
@@ -834,6 +951,7 @@ export class SurvivorGame {
         if (effect.delayed > 0) continue;
         effect.delayed = 0;
         this.damageCircle(effect.x, effect.y, effect.radius, effect.damage, effect.color);
+        if (effect.slow) this.slowCircle(effect.x, effect.y, effect.radius, effect.slow, effect.slowDuration || 1);
         effect.life = 0.4; effect.maxLife = 0.4; continue;
       }
       effect.life -= dt;

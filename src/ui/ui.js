@@ -1,5 +1,6 @@
 import { GameAudio } from "../audio/game-audio.js";
 import { CHARACTERS, WEAPONS, PASSIVES, ACHIEVEMENTS } from "../game/content.js";
+import { MAP_THEMES } from "../game/world.js";
 import { normalizeSave, defaultSave } from "../game/progression.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -11,7 +12,6 @@ const SOUND = Object.freeze({ hit: 260, dash: 330, level: 740, pickup: 1046 });
 const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const positive = value => Number.isFinite(value) ? Math.max(0, value) : 0;
 const number = value => Number(value.toFixed(2)).toString();
-const evolutionEffects = { moonArrow: "命中分裂 2 枚追踪碎片", orbitBlade: "刀刃留下切割轨迹", tideNova: "爆发追加延迟波", chainSpark: "跳跃终点追加范围落雷", graveField: "领域缓慢跟随并治疗", echoBoomerang: "返程分裂为 3 枚" };
 
 export class GameUI {
   constructor(game, { profile = defaultSave(), onSave = () => {}, metaUI = null } = {}) {
@@ -53,6 +53,7 @@ export class GameUI {
   bind() {
     this.listen($("#start"), "click", () => this.startRun());
     this.listen($("#restart"), "click", () => this.startRun());
+    this.listen($("#build-hud"), "click", event => { if (event.target?.closest?.("[data-weapon]")) this.pauseRun(); });
     this.listen($("#pause"), "click", () => { if (this.game.state === "playing") this.pauseRun(); else if (this.game.state === "paused") this.resumeRun(); });
     this.listen($("#resume"), "click", () => this.resumeRun());
     this.listen($("#sound"), "click", () => this.toggleSound());
@@ -298,41 +299,73 @@ export class GameUI {
   renderBuildHud(game) {
     const hud = $("#build-hud");
     if (!hud) return;
-    const signature = [...game.build.weapons.map(w => `${w.id}:${w.level}:${w.evolved}`), ...Object.entries(game.build.passives).map(([id, level]) => `${id}:${level}`), game.curse, game.rerollsRemaining].join("|");
+    const signature = [...game.build.weapons.map(w => `${w.id}:${w.level}:${w.evolved}:${w.evolutionId || ""}`), ...Object.entries(game.build.passives).map(([id, level]) => `${id}:${level}`), game.curse, game.rerollsRemaining].join("|");
     if (signature === this.lastBuildSignature) return;
     this.lastBuildSignature = signature;
     hud.innerHTML = `<div class="build-weapons" aria-label="武器">${game.build.weapons.filter(w => !w.hidden).map(w => {
       const definition = WEAPONS[w.id]; if (!definition) return "";
-      const ready = !w.evolved && w.level >= definition.maxLevel && (game.build.passives[definition.passive] || 0) >= 3;
-      const name = w.evolved ? definition.evolutionName : definition.name;
+      const evolvedRecipe = w.evolved ? Object.values(definition.evolutions || {}).find(recipe => recipe.id === w.evolutionId) : null;
+      const readyCount = this.evolutionRecipes(w, game).filter(item => item.ready).length;
+      const ready = readyCount > 0;
+      const name = evolvedRecipe?.name || definition.name;
       const condition = this.evolutionCondition(w, game);
-      return `<span class="build-chip ${w.evolved ? "evolved" : ready ? "evolution-ready" : ""}" data-weapon="${w.id}" title="${escapeHtml(condition)}" aria-label="${escapeHtml(`${name} ${w.evolved ? "EVO" : `等级 ${w.level}`}；${condition}`)}"><i>${definition.icon}</i><span>${name}</span><b>${w.evolved ? "EVO" : `Lv.${w.level}`}</b>${ready ? '<em>可进化</em>' : ""}</span>`;
-    }).join("")}</div><div class="build-passives" aria-label="被动">${Object.entries(game.build.passives).map(([id, level]) => { const definition = PASSIVES[id]; return definition ? `<span data-passive="${id}" title="${escapeHtml(definition.desc)}" aria-label="${definition.name} 等级 ${level}"><i>${definition.icon}</i><span>${definition.name}</span><b>Lv.${level}</b></span>` : ""; }).join("") || '<span class="build-empty">被动 0 / 4</span>'}</div>${game.curse ? `<span class="curse-chip">诅咒 ×${game.curse}</span>` : ""}<span class="reroll-chip">⟳ ${game.rerollsRemaining}</span>`;
+      return `<button type="button" class="build-chip ${w.evolved ? "evolved" : ready ? "evolution-ready" : ""}" data-weapon="${w.id}" title="${escapeHtml(condition)}" aria-label="${escapeHtml(`查看完整配方；${name} ${w.evolved ? "EVO" : `等级 ${w.level}`}；${condition}`)}"><i>${definition.icon}</i><span>${name}</span><b>${w.evolved ? "EVO" : `Lv.${w.level}`}</b>${ready ? `<em>${readyCount > 1 ? "两条可选" : "可合成"}</em>` : ""}</button>`;
+    }).join("")}</div><div class="build-passives" aria-label="被动">${Object.entries(game.build.passives).map(([id, level]) => { const definition = PASSIVES[id]; return definition ? `<span data-passive="${id}" title="${escapeHtml(this.choiceDescription({ type: "passive", target: id }, game))}" aria-label="${definition.name} 等级 ${level}"><i>${definition.icon}</i><span>${definition.name}</span><b>Lv.${level}</b></span>` : ""; }).join("") || '<span class="build-empty">被动 0 / 4</span>'}</div>${game.curse ? `<span class="curse-chip">诅咒 ×${game.curse}</span>` : ""}<span class="reroll-chip">⟳ ${game.rerollsRemaining}</span>`;
+  }
+
+  evolutionRecipes(weapon, game = this.game) {
+    const definition = WEAPONS[weapon.id];
+    return Object.entries(definition?.evolutions || {}).map(([passive, recipe]) => ({
+      passive, recipe, level: game.build.passives[passive] || 0,
+      ready: !weapon.evolved && weapon.level >= definition.maxLevel && (game.build.passives[passive] || 0) >= 3,
+    }));
   }
 
   evolutionCondition(weapon, game = this.game) {
     const definition = WEAPONS[weapon.id];
     if (!definition) return "";
-    if (weapon.evolved) return `已进化 · ${evolutionEffects[weapon.id] || definition.evolutionName}`;
-    const passive = PASSIVES[definition.passive], level = game.build.passives[definition.passive] || 0;
-    return `${definition.evolutionName}：${definition.name} ${weapon.level}/${definition.maxLevel} 级 + ${passive.name} ${level}/3 级${weapon.level >= definition.maxLevel && level >= 3 ? " ✓ 下次选择可进化" : ""}`;
+    const recipes = this.evolutionRecipes(weapon, game);
+    if (weapon.evolved) {
+      const selected = recipes.find(item => item.recipe.id === weapon.evolutionId);
+      return selected ? `已合成 · ${selected.recipe.name}：${selected.recipe.desc}。被动保留；本武器已完成唯一一次合成。` : "已合成 · 被动保留；本武器不能再次合成。";
+    }
+    return recipes.map(({ passive, recipe, level, ready }) => `${definition.name} Lv${definition.maxLevel} + ${PASSIVES[passive].name} Lv3 → ${recipe.name}：${recipe.desc}（当前 Lv${weapon.level} + Lv${level}${ready ? "；可选" : "；未满足"}）`).join("\n") + "\n两条满足时任选其一；被动不消耗，每把武器仅合成一次。";
   }
 
   choiceDescription(choice, game = this.game) {
-    const supplied = typeof game.describeChoice === "function" ? game.describeChoice(choice) : choice.desc;
-    if (typeof supplied === "string" && supplied) return supplied;
-    const definition = WEAPONS[choice.target] || PASSIVES[choice.target];
-    if (!definition) return choice.desc || "恢复生命，继续生存";
-    const current = game.build.weapons.find(w => w.id === choice.target)?.level || game.build.passives[choice.target] || 0;
-    if (choice.type === "evolve") return `${this.evolutionCondition({ id: choice.target, level: current }, game)}；${evolutionEffects[choice.target]}`;
-    if (WEAPONS[choice.target]) {
-      const damageAt = level => level ? definition.damage * (1 + (definition.growth || 0.18)) ** (level - 1) * game.player.damageMultiplier : 0;
-      return `Lv.${current} → Lv.${current + 1} · 伤害 ${number(damageAt(current))} → ${number(damageAt(current + 1))}；${definition.desc}。进化：武器 Lv.${definition.maxLevel} + ${PASSIVES[definition.passive].name} Lv.3`;
+    if (typeof game.describeChoice === "function") {
+      const description = game.describeChoice(choice);
+      if (typeof description === "string" && description) return description;
     }
-    const values = { might: [10, "伤害 +", "%"], tempo: [7, "武器间隔 -", "%"], area: [10, "范围 +", "%"], vitality: [15, "最大生命 +", ""], agility: [6, "移速 +", "%"], magnet: [25, "吸取范围 +", "%"] };
-    const [step, label, unit] = values[choice.target];
-    const weapon = Object.values(WEAPONS).find(w => w.passive === choice.target);
-    return `Lv.${current} → Lv.${current + 1} · ${label}${current * step}${unit} → ${label}${(current + 1) * step}${unit}；${definition.desc}。协同：${definition.name} Lv.3 + ${weapon.name} Lv.${weapon.maxLevel} → ${weapon.evolutionName}`;
+    const definition = WEAPONS[choice.target] || PASSIVES[choice.target];
+    const owned = game.build.weapons.find(w => w.id === choice.target);
+    const current = owned?.level || game.build.passives[choice.target] || 0;
+    if (choice.type === "evolve" && WEAPONS[choice.target]) {
+      const recipes = this.evolutionRecipes(owned || { id: choice.target, level: current }, game);
+      const selected = recipes.find(item => choice.evolutionId ? item.recipe.id === choice.evolutionId : item.passive === (choice.passive || definition.passive));
+      if (selected) return `${definition.name} Lv${definition.maxLevel} + ${PASSIVES[selected.passive].name} Lv3 → ${selected.recipe.name}：${selected.recipe.desc}。\n${recipes.filter(item => item.ready).length > 1 ? "两条配方均满足，本次选择这一条。" : ""}占原武器槽；被动不消耗；本武器仅合成一次。`;
+      return "合成配方暂不可用";
+    }
+    const supplied = typeof game.describeChoice === "function" ? game.describeChoice(choice) : choice.desc;
+    if (!definition) return supplied || "恢复生命，继续生存";
+    if (WEAPONS[choice.target]) {
+      const damageAt = level => level ? definition.damage * (1 + (definition.growth || 0.18)) ** (level - 1) * (game.player.damageMultiplier || 1) : 0;
+      const detail = supplied?.split(/。可与|。协同/)[0] || `Lv.${current} → Lv.${current + 1} · 伤害 ${number(damageAt(current))} → ${number(damageAt(current + 1))}；${definition.desc}`;
+      return `${detail}\n${this.evolutionCondition(owned || { id: choice.target, level: current }, game)}`;
+    }
+    const next = current + 1;
+    const delta = (step, label, unit = "%") => `${label}${current * step}${unit} → ${next * step}${unit}`;
+    const values = {
+      might: delta(10, "全武器伤害 +"), tempo: delta(7, "武器间隔 -"),
+      area: `${delta(10, "范围 +")}；${delta(8, "弹体体积 +")}`,
+      vitality: `${delta(15, "最大生命 +", "")}；立刻回复 15`,
+      agility: `${delta(6, "移速 +")}；${delta(4, "闪避冷却 -")}`,
+      magnet: `${delta(25, "吸取范围 +")}；${delta(5, "经验 +")}`,
+      focus: `${delta(8, "全武器伤害 +")}；${delta(6, "射程 +")}`,
+      ward: `${delta(6, "受伤后无敌时间 +")}；${delta(5, "最大生命 +", "")}`,
+    };
+    const recipes = Object.values(WEAPONS).filter(w => w.passives.includes(choice.target)).map(w => `${w.name} Lv${w.maxLevel} + ${definition.name} Lv3 → ${w.evolutions[choice.target].name}：${w.evolutions[choice.target].desc}`);
+    return `Lv.${current} → Lv.${next} · ${values[choice.target] || definition.desc}\n${recipes.join("\n")}\n被动不消耗，可分别协同两把武器；每把武器仅合成一次。`;
   }
 
   renderChoiceList(list, choices, game = this.game) {
@@ -340,7 +373,7 @@ export class GameUI {
     for (const [index, choice] of choices.entries()) {
       const button = document.createElement("button");
       button.className = `upgrade-option ${choice.category || ""}`;
-      const category = choice.category === "evolution" ? "进化 · 占原武器槽" : choice.category === "weapon" ? "武器" : choice.category === "passive" ? "被动" : "补给";
+      const category = choice.category === "evolution" ? "合成 · 占原武器槽 · 被动保留" : choice.category === "weapon" ? "武器" : choice.category === "passive" ? "被动" : "补给";
       button.innerHTML = `<span class="upgrade-index">${index + 1}</span><span class="upgrade-icon">${escapeHtml(choice.icon)}</span><span class="upgrade-text"><b>${escapeHtml(choice.name)}</b><small>${escapeHtml(this.choiceDescription(choice, game))}</small><em>${category}</em></span><span class="upgrade-arrow">↗</span>`;
       button.addEventListener("click", () => this.chooseUpgrade(choice.id));
       list.append(button);
@@ -383,7 +416,7 @@ export class GameUI {
     let screen = $("#chest-screen");
     if (!screen) {
       screen = document.createElement("section"); screen.id = "chest-screen"; screen.className = "overlay hidden";
-      screen.setAttribute("role", "dialog"); screen.setAttribute("aria-modal", "true"); screen.setAttribute("aria-label", "夜潮宝箱三选一");
+      screen.setAttribute("role", "dialog"); screen.setAttribute("aria-modal", "true"); screen.setAttribute("aria-label", "夜潮宝箱选择强化");
       screen.innerHTML = '<div class="modal-card level-card chest-card"><p class="eyebrow">TREASURE IN THE TIDE</p><h2>夜潮宝箱</h2><p class="modal-sub">仅强化已有构筑 · 按 1 / 2 / 3 选择</p><div class="upgrade-list"></div></div>';
       $("#game").append(screen);
     }
@@ -396,8 +429,11 @@ export class GameUI {
     if (!container) return;
     container.innerHTML = `<div class="pause-weapons"><small>武器 ${game.activeWeapons.length} / 4 · 进化目标</small>${game.activeWeapons.map(w => {
       const definition = WEAPONS[w.id];
-      return `<article class="pause-weapon ${w.evolved ? "evolved" : ""}"><b>${definition.icon} ${w.evolved ? definition.evolutionName : definition.name} · ${w.evolved ? "EVO" : `Lv.${w.level}`}</b><p>${escapeHtml(this.evolutionCondition(w, game))}</p><progress max="8" value="${w.evolved ? 8 : Math.min(definition.maxLevel, w.level) + Math.min(3, game.build.passives[definition.passive] || 0)}" aria-label="${definition.evolutionName}条件进度"></progress></article>`;
-    }).join("")}</div><div class="pause-passives"><small>被动 ${Object.keys(game.build.passives).length} / 4</small>${Object.entries(game.build.passives).map(([id, level]) => `<article><b>${PASSIVES[id].icon} ${PASSIVES[id].name} · Lv.${level}</b><p>每级：${PASSIVES[id].desc}</p></article>`).join("") || "<em>尚未选择 · 升级时补足协同条件</em>"}</div><p class="pause-meta-note">永久刻印和角色选择将在下一局生效。</p>`;
+      const recipe = w.evolved ? Object.values(definition.evolutions || {}).find(item => item.id === w.evolutionId) : null;
+      const recipes = this.evolutionRecipes(w, game);
+      const details = w.evolved ? `<p>${escapeHtml(this.evolutionCondition(w, game))}</p>` : recipes.map(({ passive, recipe, level, ready }) => `<section class="pause-recipe ${ready ? "ready" : ""}"><b>${escapeHtml(recipe.name)} · ${ready ? "可选" : "未满足"}</b><p>${escapeHtml(definition.name)} Lv${definition.maxLevel} + ${escapeHtml(PASSIVES[passive].name)} Lv3（当前 Lv${w.level} + Lv${level}）</p><p>${escapeHtml(recipe.desc)}</p><progress max="${definition.maxLevel + 3}" value="${Math.min(definition.maxLevel, w.level) + Math.min(3, level)}" aria-label="${escapeHtml(recipe.name)}合成条件进度"></progress></section>`).join("");
+      return `<article class="pause-weapon ${w.evolved ? "evolved" : ""}"><b>${definition.icon} ${escapeHtml(recipe?.name || definition.name)} · ${w.evolved ? "EVO" : `Lv.${w.level}`}</b>${details}</article>`;
+    }).join("")}</div><div class="pause-passives"><small>被动 ${Object.keys(game.build.passives).length} / 4</small>${Object.entries(game.build.passives).map(([id, level]) => `<article><b>${PASSIVES[id].icon} ${PASSIVES[id].name} · Lv.${level}</b><p>每级：${PASSIVES[id].desc}</p></article>`).join("") || "<em>尚未选择 · 升级时补足协同条件</em>"}</div><p class="pause-meta-note">武器 Lv5 + 对应被动 Lv3 可合成；两条满足时任选其一。被动不消耗，每把武器仅合成一次。永久刻印和角色选择将在下一局生效。</p><p class="pause-map-note">地图复现码：<b>${escapeHtml(game.map?.seed ?? "暂无")}</b><br>本局区域：${escapeHtml((game.map?.themes || []).map(id => MAP_THEMES[id]?.name || id).join(" · ") || "暂无")}</p>`;
   }
 
   showResult(game) {

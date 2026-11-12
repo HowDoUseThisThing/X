@@ -20,7 +20,7 @@ function earnedSave() {
     version: SAVE_VERSION,
     echoes: 4200,
     meta: { life: 3, ember: 2, light: 4, fate: 2, fortune: 1 },
-    unlocked: { ranger: true, warden: true, oracle: false },
+    unlocked: { ranger: true, warden: true, oracle: false, sentinel: false },
     achievements: { dawn: true, boss: true },
     stats: { runs: 7, bestTime: 613.25, bestKills: 901, bosses: 4, evolutions: 2 },
     preferences: { character: "warden", sound: false, tutorialSeen: true },

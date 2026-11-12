@@ -180,7 +180,7 @@ stateDiagram-v2
 
 | 数据 | 所有者与用途 |
 | --- | --- |
-| `game.build` | `{ weapons: [{ id, level, evolved }], passives: { [id]: level } }`，最多 4 武器 + 4 被动；没有 `player.build` |
+| `game.build` | `{ weapons: [{ id, level, evolved, evolutionId }], passives: { [id]: level } }`，最多 4 武器 + 4 被动；没有 `player.build` |
 | `game.player` | 位置/生命/经验，以及派生的 `damageMultiplier/cooldownMultiplier/areaMultiplier/xpMultiplier/pickupChance`、移速、磁吸、闪避冷却和月痕箭兼容字段 |
 | `game.runMeta` | `reset()` 时复制 `profile.meta` 的本局快照；`recalculateStats()` 从它读取永久强化 |
 | `game.weaponClocks` | 按武器 ID 保存周期武器冷却；月痕箭仍使用 `fireClock`，环葬刃另有 `orbitHits/orbitTrailClock/orbitBlades` |
@@ -246,12 +246,22 @@ stateDiagram-v2
 - 暂停页显示完整构筑、进化进度、撤离及局外入口；结算页显示回响与成就；潮回声廊含刻印/角色/成就三页，区分“已解锁”和“本局达成、待结算”。`#tutorial-screen` 提供指南并记录已读偏好。覆盖层隔离底层控件，并处理键盘焦点。
 - 样式使用 `env(safe-area-inset-*)`；宽度 ≤650px 为窄屏布局，横屏且高度 ≤520px 为紧凑布局。紧凑横屏的升级页采用左侧说明/操作、右侧三张卡，局外页采用侧边页签和可滚动内容。
 - 当前后置横屏样式恢复被动缩略条与重抽数，竖屏通过 `.orientation-hint` 轻提示横屏；横竖屏只改变视口与 UI，不改变 3200×2200 世界坐标。
-- 按钮至少 44px；长构筑清单与局外内容使用内部滚动，继续、撤离与返回操作固定在面板内。Chrome/Edge 已完成四视口的尺寸、遮挡与旋转操作检查，完整证据见验收报告。
+- 按钮至少 44px；长构筑清单与局外内容使用内部滚动，继续、撤离与返回操作固定在面板内。历史六武器版本的 Chrome/Edge 四视口检查见验收报告；本次四角色与双配方布局需单独检查。
 
-### 11.9 验证与交付
+### 11.9 历史六武器版本验证与交付（不覆盖本次扩展）
 
 - 单元测试 147 项通过，保留原有音频、确定性与空间网格等价回归；新测试实际触发六进化伤害、敌人行为、首领阶段、致命伤害顺序和预算边界。
 - Chrome 与 Edge 各 63 项策略浏览器检查通过，覆盖桌面、竖屏、横屏、紧凑横屏、旋转和双指分别释放。旧浏览器音频/镜头/裁剪检查也在两款浏览器通过。
 - `npm run test:performance` 记录逻辑与两组各 12 分钟耐久、实体峰值和 GC 后内存采样；`npm run test:frame-performance` 对比 600 可见敌人时的更新、Canvas 绘制和读回同步，保留相对开销与测量限制。
 - `npm run package` 生成静态包，`npm run test:release` 核对运行时文件哈希并验证包内的手机启动、选卡、旋转、撤离和刷新保存。
 - 数值、报告路径与真实设备验证边界集中记录在 [`acceptance.md`](acceptance.md)。线上版本以实际部署结果为准；没有手机硬件上的音频、帧率或操作手感结论。
+
+### 11.10 当前八武器与随机地图补记（2026-11-12）
+
+- 当前目录共 8 武器、4 角色、8 被动、16 配方；4+4 槽位不变。每把武器 `passives` 含两个 ID，`evolutions[passive]` 保存 `id/name/effect/desc`；每种被动关联两把武器。`evolved/evolutionId` 表示唯一一次合成及所选结果，不能按武器 ID 推断单一进化。
+- 两条配方独立检查武器 Lv5 + 被动 Lv3，同时满足时可选其一；合成不消耗被动、不增加槽位、每把武器只合成一次。候选总数最多三项，多武器同时就绪时按种子洗牌武器组，整组展示同一武器的就绪分支；不保证所有武器同屏，但重抽可以切换武器组。
+- `GameUI.evolutionRecipes()` 汇总当前等级和两条就绪状态；HUD 的名称、提示和可选数、升级/宝箱配方说明、暂停的逐配方进度统一从目录派生。HUD 武器可点击打开暂停查看完整信息；已合成项按实例 `evolutionId` 显示名称和 `desc`。
+- `choiceDescription()` 优先使用规则层 `describeChoice()`，没有该方法时兜底数值说明，覆盖全部八被动；focus 为全武器伤害 +8%、远程射程 +6%/级，ward 为受伤后无敌时间 +6%、最大生命 +5/级。未知被动使用目录说明，避免解构不存在的数值项。
+- 角色选择遍历 `CHARACTERS`，包含 sentinel；桌面四列、窄屏竖向两列，保留 44px 点击区域。sentinel 目标属性为射程 +20%、弹速 +15%、90 HP、经验倍率 1.05。
+- `world.js` 的 `MAP_THEMES` 提供荒野遗迹/潮湿沼泽/月蚀墓园/晶岩峡谷/灰烬荒原五种主题；`generateMap(seed)` 每局选四种主题，生成多个区域和随机祭坛，仍保持固定世界尺寸。暂停通过导入 `MAP_THEMES` 将 `game.map.themes` 转为名称，并显示 `game.map.seed` 作为地图复现码；不向玩家展示内部数据字段。种子不能单独复现战斗输入与选择。
+- 第 1～10 节是原始基线，第 11.9 节为六武器版本历史检查；当前扩展的检查范围与未验内容单独记录在验收文档顶部。

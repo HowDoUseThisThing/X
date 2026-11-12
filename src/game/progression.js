@@ -27,7 +27,7 @@ export function defaultSave() {
     version: SAVE_VERSION,
     echoes: 0,
     meta: { life: 0, ember: 0, light: 0, fate: 0, fortune: 0 },
-    unlocked: { ranger: true, warden: false, oracle: false },
+    unlocked: { ranger: true, warden: false, oracle: false, sentinel: false },
     achievements: {},
     stats: { runs: 0, bestTime: 0, bestKills: 0, bosses: 0, evolutions: 0 },
     preferences: { character: "ranger", sound: true, tutorialSeen: false },
@@ -43,6 +43,7 @@ export function normalizeSave(value) {
     ranger: true,
     warden: field(savedUnlocks, "warden") === true,
     oracle: field(savedUnlocks, "oracle") === true,
+    sentinel: field(savedUnlocks, "sentinel") === true,
   };
   const character = field(preferences, "character");
   return {

@@ -10,6 +10,7 @@
     "extract:reference": "node scripts/extract-reference.mjs",
     "test:browser": "node scripts/browser-check.mjs",
     "test:strategy-browser": "node scripts/strategy-browser-check.mjs",
+    "test:expansion-browser": "node scripts/expansion-browser-check.mjs",
     "package": "node scripts/package.mjs",
     "test:performance": "node --expose-gc scripts/performance-check.mjs",
     "test:frame-performance": "node scripts/frame-performance-check.mjs",

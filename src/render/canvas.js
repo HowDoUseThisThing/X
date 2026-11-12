@@ -17,6 +17,7 @@ export class CanvasRenderer {
     this.threats = Array.from({ length: 12 }, () => ({ enemy: null, distance: Infinity }));
     this.metrics = { enemiesDrawn: 0, enemiesSkipped: 0, gemsDrawn: 0, threatsDrawn: 0, pickupsDrawn: 0, effectsDrawn: 0 };
     this.terrain = new TerrainRenderer();
+    this.terrainSeed = this.terrain.map.seed;
     this.footsteps = []; this.trackedPlayer = null; this.stepDistance = 0; this.stepSide = 1;
     this.stars = Array.from({ length: 130 }, (_, i) => ({ x: Math.sin(i * 127.1) * 10000 % 1, y: Math.sin(i * 311.7 + 8) * 10000 % 1, size: 0.5 + (i * 17 % 10) / 10, alpha: 0.1 + (i * 13 % 30) / 100 }));
     this.resize();
@@ -38,6 +39,8 @@ export class CanvasRenderer {
 
   draw(game, now = 0) {
     const ctx = this.context, w = this.width, h = this.height, p = game.player, settings = this.quality.settings;
+    this.lastElapsed = game.elapsed;
+    if (game.map && game.map.seed !== this.terrainSeed) { this.terrain = new TerrainRenderer(WORLD, game.map); this.terrainSeed = game.map.seed; }
     this.updateFootsteps(game);
     const camera = getCameraCenter(p.x, p.y, w, h);
     const ox = camera.x - w / 2, oy = camera.y - h / 2;
@@ -141,18 +144,41 @@ export class CanvasRenderer {
       ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, TAU); ctx.fill();
       ctx.globalAlpha *= 1.8; ctx.strokeStyle = zone.hostile ? "#ff796f" : zone.color; ctx.lineWidth = zone.hostile ? 3 : 1.5;
       if (zone.hostile) ctx.setLineDash([8, 5]); ctx.stroke(); ctx.restore();
+      if (zone.kind === "frost") {
+        ctx.save(); ctx.strokeStyle = zone.color; ctx.globalAlpha = 0.5; ctx.translate(zone.x, zone.y);
+        for (let i = 0; i < 6; i += 1) { const a = i / 6 * TAU + now * 0.15; ctx.beginPath(); ctx.moveTo(Math.cos(a) * zone.radius * .4, Math.sin(a) * zone.radius * .4); ctx.lineTo(Math.cos(a) * zone.radius * .9, Math.sin(a) * zone.radius * .9); ctx.stroke(); }
+        ctx.restore();
+      }
     }
   }
 
   drawEffects(ctx, game, now) {
     for (const effect of game.effects || []) {
-      if (effect.delayed > 0) continue;
+      if (effect.delayed > 0 && effect.kind !== "starfall" && effect.kind !== "prison") continue;
       if (effect.radius < 500 && !this.inView(effect.x, effect.y, effect.radius)) continue;
       const fade = Math.max(0, effect.life / effect.maxLife);
       ctx.save(); ctx.globalAlpha = fade * 0.45; ctx.strokeStyle = effect.color; ctx.lineWidth = 3;
       ctx.shadowBlur = this.quality.settings.glow ? 18 : 0; ctx.shadowColor = effect.color;
       if (effect.kind === "chain") {
         ctx.beginPath(); effect.points.forEach((point, i) => i ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y)); ctx.stroke();
+      } else if (effect.kind === "starfall") {
+        ctx.translate(effect.x, effect.y);
+        ctx.globalAlpha = effect.delayed > 0 ? .3 : fade;
+        ctx.beginPath(); ctx.arc(0, 0, effect.radius, 0, TAU); ctx.stroke();
+        const fall = effect.delayed > 0 ? -effect.delayed * 180 : 0;
+        ctx.beginPath(); ctx.moveTo(0, fall - 20); ctx.lineTo(8, fall); ctx.lineTo(0, fall + 12); ctx.lineTo(-8, fall); ctx.closePath(); ctx.stroke();
+      } else if (["crown", "frost", "prison", "bloom", "bladePulse"].includes(effect.kind)) {
+        const points = effect.kind === "bloom" ? 12 : effect.kind === "crown" ? 16 : 6;
+        const radius = effect.radius * (1 - fade * .2);
+        ctx.translate(effect.x, effect.y); ctx.rotate(effect.kind === "bloom" ? now * .3 : 0);
+        if (effect.delayed > 0) { ctx.globalAlpha = .25; ctx.setLineDash([6, 5]); }
+        ctx.beginPath();
+        for (let i = 0; i <= points; i += 1) {
+          const a = i / points * TAU, r = radius * (effect.kind === "crown" && i % 2 ? .7 : 1);
+          if (i) ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); else ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+        ctx.closePath(); ctx.stroke();
+        if (effect.kind === "frost" || effect.kind === "bloom") for (let i = 0; i < 6; i += 1) { const a = i / 6 * TAU; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * radius, Math.sin(a) * radius); ctx.stroke(); }
       } else {
         ctx.beginPath(); ctx.arc(effect.x, effect.y, effect.radius * (1 - fade * 0.25), 0, TAU); ctx.stroke();
       }
@@ -164,7 +190,7 @@ export class CanvasRenderer {
     for (const blade of game.orbitBlades || []) {
       if (!this.inView(blade.x, blade.y, 20)) continue;
       ctx.save(); ctx.translate(blade.x, blade.y); ctx.rotate(blade.angle);
-      ctx.fillStyle = "#e7dbff"; ctx.shadowBlur = this.quality.settings.glow ? 16 : 0; ctx.shadowColor = WEAPONS.orbitBlade.color;
+      ctx.fillStyle = blade.color || "#e7dbff"; ctx.shadowBlur = this.quality.settings.glow ? 16 : 0; ctx.shadowColor = blade.color || WEAPONS.orbitBlade.color;
       ctx.beginPath(); ctx.ellipse(0, 0, 13, 4, 0, 0, TAU); ctx.fill(); ctx.restore();
     }
   }
@@ -216,6 +242,7 @@ export class CanvasRenderer {
     ctx.fillStyle = "rgba(174,133,244,.13)"; ctx.beginPath(); ctx.arc(0, 0, 31 * pulse, 0, TAU); ctx.fill();
     ctx.shadowBlur = 0; ctx.fillStyle = p.invulnerable ? "#fff2d0" : "#f4e9ff"; ctx.beginPath(); ctx.arc(0, 0, p.radius * pulse, 0, TAU); ctx.fill();
     ctx.fillStyle = "#604b84"; ctx.beginPath(); ctx.arc(4, -1, 4, 0, TAU); ctx.fill();
+    if (p.shieldTime > 0 && p.shield > 0) { ctx.strokeStyle = "#f1e4a8"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, p.radius + 14, 0, TAU); ctx.stroke(); }
     ctx.save(); ctx.rotate(p.facing); ctx.shadowBlur = 12; ctx.shadowColor = "#c6a5ff"; ctx.fillStyle = "#c6a5ff";
     ctx.beginPath(); ctx.moveTo(23, 0); ctx.lineTo(11, -7); ctx.lineTo(13, 0); ctx.lineTo(11, 7); ctx.closePath(); ctx.fill(); ctx.restore(); ctx.restore();
   }
@@ -250,6 +277,7 @@ export class CanvasRenderer {
     ctx.save(); ctx.translate(enemy.x, enemy.y); ctx.scale(pulse, 1 / pulse);
     const sprite = this.sprites.enemy(enemy, this.quality.settings.glow); ctx.drawImage(sprite.canvas, -sprite.size / 2, -sprite.size / 2, sprite.size, sprite.size);
     if (enemy.elite) { ctx.strokeStyle = "#ffe19a"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, enemy.radius + 7, 0, TAU); ctx.stroke(); }
+    if (enemy.slowUntil > this.lastElapsed) { ctx.strokeStyle = "#9ed7ff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, 0, enemy.radius + 3, 0, TAU); ctx.stroke(); }
     if (enemy.behavior === "charge" && enemy.state === "windup") { ctx.strokeStyle = "#ffb17b"; ctx.globalAlpha = .7; ctx.beginPath(); ctx.arc(0, 0, enemy.radius + 12, 0, TAU); ctx.stroke(); }
     if (enemy.behavior === "bomb" && enemy.fuse > 0) { ctx.strokeStyle = "#f5df73"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, enemy.radius + 16, -Math.PI / 2, -Math.PI / 2 + TAU * (1 - enemy.fuse / .75)); ctx.stroke(); }
     if (enemy.hp < enemy.maxHp && !enemy.boss) {
@@ -280,7 +308,10 @@ export class CanvasRenderer {
     }
     ctx.globalAlpha = 1;
     if (shot.kind === "boomerang") { ctx.fillStyle = "#f6bed5"; ctx.shadowBlur = this.quality.settings.glow ? 12 : 0; ctx.shadowColor = "#f6bed5"; ctx.beginPath(); ctx.arc(shot.x, shot.y, shot.radius, 0, TAU); ctx.fill(); ctx.shadowBlur = 0; }
-    else { const sprite = this.sprites.projectile(this.quality.settings.glow), size = sprite.size * shot.radius / 5; ctx.drawImage(sprite.canvas, shot.x - size / 2, shot.y - size / 2, size, size); }
+    else if (shot.kind === "lance") {
+      ctx.save(); ctx.translate(shot.x, shot.y); ctx.rotate(Math.atan2(shot.vy, shot.vx));
+      ctx.fillStyle = shot.color || "#f6e59d"; ctx.beginPath(); ctx.moveTo(shot.radius * 2.4, 0); ctx.lineTo(-shot.radius, -shot.radius * .6); ctx.lineTo(-shot.radius * .3, 0); ctx.lineTo(-shot.radius, shot.radius * .6); ctx.closePath(); ctx.fill(); ctx.restore();
+    } else { const sprite = this.sprites.projectile(this.quality.settings.glow), size = sprite.size * shot.radius / 5; ctx.drawImage(sprite.canvas, shot.x - size / 2, shot.y - size / 2, size, size); }
   }
 
   drawGem(ctx, gem, now) {

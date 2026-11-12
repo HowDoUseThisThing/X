@@ -1,88 +1,67 @@
 import { mulberry32 } from "../core/math.js";
-import { WORLD } from "../game/world.js";
+import { MAP_THEMES, WORLD, generateMap } from "../game/world.js";
 
 const TAU = Math.PI * 2;
+// Retain only the latest bake (~28 MB), so repeated construction for one seed is cheap.
+let latestBake;
 
 // Bake scenery once with its own seed: moving the camera never rearranges the
 // ground, and decoration cannot change the gameplay random sequence.
 export class TerrainRenderer {
-  constructor(world = WORLD) {
+  constructor(world = WORLD, map = generateMap(1)) {
     this.world = world;
+    this.map = map;
+    const cacheKey = JSON.stringify([world.width, world.height, map]);
+    if (latestBake?.key === cacheKey) {
+      this.canvas = latestBake.canvas;
+      return;
+    }
     this.canvas = document.createElement("canvas");
     this.canvas.width = world.width;
     this.canvas.height = world.height;
     const ctx = this.canvas.getContext("2d", { alpha: false });
-    const random = mulberry32(0x72a4d19);
+    const random = mulberry32(map.seed ^ 0x72a4d19);
     const range = (min, max) => min + random() * (max - min);
     const halfW = world.width / 2, halfH = world.height / 2;
-
-    ctx.fillStyle = "#191b21";
+    ctx.fillStyle = MAP_THEMES[map.themes[0]]?.ground || "#191b21";
     ctx.fillRect(0, 0, world.width, world.height);
     ctx.translate(halfW, halfH);
 
-    for (let i = 0; i < 100; i += 1) {
-      const x = range(-halfW, halfW), y = range(-halfH, halfH);
-      const radius = range(90, 290);
+    for (const region of map.regions) {
+      const theme = MAP_THEMES[region.theme];
+      const local = mulberry32(region.seed);
+      const localRange = (min, max) => min + local() * (max - min);
       ctx.save();
-      ctx.translate(x, y);
-      ctx.scale(1, range(0.45, 0.85));
-      const wash = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
-      wash.addColorStop(0, ["rgba(74,67,65,.23)", "rgba(47,67,60,.28)", "rgba(64,53,76,.25)"][i % 3]);
-      wash.addColorStop(1, "rgba(25,27,33,0)");
-      ctx.fillStyle = wash;
-      ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
+      ctx.beginPath(); ctx.rect(region.x, region.y, region.width, region.height); ctx.clip();
+      ctx.fillStyle = theme.ground;
+      ctx.fillRect(region.x, region.y, region.width, region.height);
+      for (let i = 0; i < 35; i += 1) {
+        const x = localRange(region.x, region.x + region.width);
+        const y = localRange(region.y, region.y + region.height), radius = localRange(80, 260);
+        const wash = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        wash.addColorStop(0, theme.wash[i % theme.wash.length]);
+        wash.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = wash; ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      }
       ctx.restore();
     }
-
-    const roads = [
-      [[-1600, 720], [-1210, 570], [-820, 450], [-470, 200], [-150, 80], [160, -80], [510, -180], [870, -390], [1260, -470], [1600, -650]],
-      [[-1100, -1100], [-800, -760], [-490, -430], [-250, -180], [-150, 80], [20, 360], [310, 650], [680, 1100]],
-    ];
-    for (const points of roads) this.paintRoad(ctx, points, range);
-
-    // Small, irregular marks provide nearby motion references between landmarks.
+    // Fine ground grain is flat and intentionally subtle even in clearings.
     for (let i = 0; i < 19000; i += 1) {
-      const x = range(-halfW, halfW), y = range(-halfH, halfH);
       ctx.fillStyle = i % 3 ? "rgba(125,121,116,.075)" : "rgba(5,9,12,.2)";
-      ctx.fillRect(x, y, range(0.7, 2.5), range(0.6, 1.7));
+      ctx.fillRect(range(-halfW, halfW), range(-halfH, halfH), range(.7, 2.5), range(.6, 1.7));
     }
-    for (let i = 0; i < 620; i += 1) {
-      const x = range(-halfW, halfW), y = range(-halfH, halfH);
-      const length = range(10, 34), angle = range(0, TAU);
-      ctx.save(); ctx.translate(x, y); ctx.rotate(angle);
-      ctx.strokeStyle = "rgba(7,10,14,.48)";
-      ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(-length / 2, -2); ctx.lineTo(-3, 1);
-      ctx.lineTo(4, -1); ctx.lineTo(length / 2, 3); ctx.stroke();
-      ctx.strokeStyle = "rgba(133,124,129,.11)";
-      ctx.beginPath(); ctx.moveTo(-length / 2, -1); ctx.lineTo(-3, 2); ctx.lineTo(4, 0); ctx.stroke();
-      ctx.restore();
+    for (const road of map.roads) this.paintRoad(ctx, road.points, range, road.width);
+    // Flat paving identifies the clear altar approach without obscuring the live altar UI.
+    for (const altar of map.altars) {
+      ctx.fillStyle = "rgba(72,70,77,.22)";
+      ctx.beginPath(); ctx.arc(altar.x, altar.y, 100, 0, TAU); ctx.fill();
+      ctx.strokeStyle = "rgba(168,158,175,.20)"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(altar.x, altar.y, 88, 0, TAU); ctx.stroke();
     }
-    for (let i = 0; i < 850; i += 1) {
-      this.paintGrass(ctx, range(-halfW + 22, halfW - 22), range(-halfH + 22, halfH - 22), range, false);
+    for (const item of [...map.landmarks, ...map.decorations].sort((a, b) => a.y - b.y)) {
+      this.paintLandscape(ctx, item);
     }
-    for (let i = 0; i < 330; i += 1) {
-      this.paintRock(ctx, range(-halfW + 30, halfW - 30), range(-halfH + 30, halfH - 30), range(3, 10), range);
-    }
-
-    const rockGroups = [[-260, 170], [260, -200], [330, 265], [-610, -170], [620, 470], [-980, 350], [1030, -700], [-1220, -810], [1260, 760], [-560, 870]];
-    for (const [x, y] of rockGroups) {
-      for (let i = 0; i < 5; i += 1) this.paintRock(ctx, x + range(-32, 32), y + range(-18, 18), range(7, 22), range);
-      this.paintGrass(ctx, x - 26, y + 19, range, false);
-    }
-
-    this.paintRuin(ctx, -350, -190, 68, range);
-    this.paintRuin(ctx, 740, -450, 91, range);
-    this.paintRuin(ctx, -1060, 650, 58, range);
-    for (const [x, y, height] of [[-450, -275, 58], [-255, -245, 35], [640, -505, 63], [830, -455, 39], [1090, 610, 74], [-1040, -740, 44], [340, 760, 49]]) {
-      this.paintPillar(ctx, x, y, height);
-    }
-    for (const [x, y, size, flip] of [[410, 100, 1, 1], [-510, 340, .83, -1], [1050, 80, 1.18, 1], [-870, -540, 1.1, -1], [130, -760, .92, 1], [-1300, 80, .95, 1], [850, 850, .82, -1]]) {
-      this.paintTree(ctx, x, y, size, flip);
-    }
-    for (let i = 0; i < 48; i += 1) {
-      this.paintGrass(ctx, range(-halfW + 40, halfW - 40), range(-halfH + 40, halfH - 40), range, true);
-    }
+    latestBake = { key: cacheKey, canvas: this.canvas };
   }
 
   draw(ctx, left, top, width, height) {
@@ -94,18 +73,15 @@ export class TerrainRenderer {
     ctx.drawImage(this.canvas, x + halfW, y + halfH, w, h, x, y, w, h);
   }
 
-  paintRoad(ctx, points, range) {
+  paintRoad(ctx, points, range, width = 76) {
     ctx.save();
     ctx.lineCap = "round"; ctx.lineJoin = "round";
     ctx.beginPath(); ctx.moveTo(...points[0]);
-    for (let i = 1; i < points.length - 1; i += 1) {
-      const next = points[i + 1];
-      ctx.quadraticCurveTo(...points[i], (points[i][0] + next[0]) / 2, (points[i][1] + next[1]) / 2);
-    }
-    ctx.lineTo(...points[points.length - 1]);
-    ctx.strokeStyle = "rgba(9,12,17,.24)"; ctx.lineWidth = 100; ctx.stroke();
-    ctx.strokeStyle = "rgba(86,76,71,.19)"; ctx.lineWidth = 82; ctx.stroke();
-    ctx.strokeStyle = "rgba(91,83,78,.12)"; ctx.lineWidth = 55; ctx.stroke();
+    // Match the generated polyline exactly so road clearance also matches the pixels.
+    for (const point of points.slice(1)) ctx.lineTo(...point);
+    ctx.strokeStyle = "rgba(9,12,17,.24)"; ctx.lineWidth = width; ctx.stroke();
+    ctx.strokeStyle = "rgba(86,76,71,.25)"; ctx.lineWidth = width * .82; ctx.stroke();
+    ctx.strokeStyle = "rgba(91,83,78,.18)"; ctx.lineWidth = width * .55; ctx.stroke();
     ctx.restore();
 
     for (let segment = 0; segment < points.length - 1; segment += 1) {
@@ -114,7 +90,7 @@ export class TerrainRenderer {
       for (let d = 18; d < length; d += range(36, 52)) {
         for (const lane of [-1, 1]) {
           if (range(0, 1) < .19) continue;
-          const offset = lane * range(12, 21);
+          const offset = lane * range(9, width * .2);
           const x = ax + (bx - ax) * d / length - Math.sin(angle) * offset;
           const y = ay + (by - ay) * d / length + Math.cos(angle) * offset;
           ctx.save(); ctx.translate(x, y); ctx.rotate(angle + range(-.18, .18));
@@ -132,6 +108,79 @@ export class TerrainRenderer {
         }
       }
     }
+  }
+
+  paintLandscape(ctx, item) {
+    const random = mulberry32(item.seed);
+    const range = (min, max) => min + random() * (max - min);
+    const { x, y, radius: r, kind } = item;
+    if (kind === "ruin") return this.paintRuin(ctx, x, y, r * .5, range);
+    if (kind === "pillar") return this.paintPillar(ctx, x, y, r * .65);
+    if (kind === "tree") return this.paintTree(ctx, x, y, r / 125, item.rotation < 0 ? -1 : 1);
+    if (kind === "rock") return this.paintRock(ctx, x, y, r * .6, range);
+    if (kind === "rubble" || kind === "rockGroup") {
+      for (let i = 0; i < 6; i += 1) {
+        this.paintRock(ctx, x + range(-r * .45, r * .45), y + range(-r * .3, r * .3), range(r * .1, r * .28), range);
+      }
+      return;
+    }
+    ctx.save(); ctx.translate(x, y); ctx.rotate(item.rotation * .16);
+    if (kind === "puddle") {
+      // Irregular shore, still water, ripples and rushes: unmistakably wet ground.
+      ctx.beginPath();
+      for (let i = 0; i < 13; i += 1) {
+        const angle = i / 12 * TAU, size = range(.65, .87) * r;
+        const px = Math.cos(angle) * size, py = Math.sin(angle) * size * .56;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.fillStyle = "#0c302f"; ctx.fill();
+      ctx.strokeStyle = "#42604c"; ctx.lineWidth = 5; ctx.stroke();
+      ctx.strokeStyle = "rgba(114,192,172,.35)"; ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i += 1) {
+        ctx.beginPath(); ctx.ellipse(range(-r * .35, r * .35), range(-r * .18, r * .18), r * range(.12, .26), r * .055, 0, .2, 2.9); ctx.stroke();
+      }
+      for (let i = 0; i < 7; i += 1) this.paintGrass(ctx, range(-r * .6, r * .6), r * .45, range, true);
+    } else if (kind === "grave") {
+      ctx.fillStyle = "rgba(8,7,17,.4)";
+      ctx.beginPath(); ctx.ellipse(0, r * .25, r * .5, r * .19, 0, 0, TAU); ctx.fill();
+      ctx.fillStyle = "#68616e"; ctx.strokeStyle = "#938499"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(-r * .26, r * .2); ctx.lineTo(-r * .26, -r * .35);
+      ctx.quadraticCurveTo(0, -r * .85, r * .26, -r * .35);
+      ctx.lineTo(r * .26, r * .2); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = "#332e41"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, -r * .43); ctx.lineTo(0, -r * .05);
+      ctx.moveTo(-r * .12, -r * .3); ctx.lineTo(r * .12, -r * .3); ctx.stroke();
+      ctx.strokeStyle = "rgba(166,139,181,.2)";
+      ctx.strokeRect(-r * .21, r * .3, r * .42, r * .27);
+    } else if (kind === "crystal" || kind === "shard") {
+      for (let i = 0; i < (kind === "crystal" ? 5 : 2); i += 1) {
+        const dx = range(-r * .4, r * .4), dy = range(-r * .1, r * .25);
+        const h = range(r * .3, r * .75), w = h * .24;
+        ctx.beginPath(); ctx.moveTo(dx - w, dy); ctx.lineTo(dx - w, dy - h * .65);
+        ctx.lineTo(dx, dy - h); ctx.lineTo(dx + w, dy - h * .65); ctx.lineTo(dx + w, dy); ctx.closePath();
+        ctx.fillStyle = i % 2 ? "#417e9d" : "#679eae"; ctx.fill();
+        ctx.strokeStyle = "#a2e0e6"; ctx.lineWidth = 1; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(dx, dy); ctx.lineTo(dx, dy - h); ctx.stroke();
+      }
+    } else if (kind === "ash" || kind === "cinder") {
+      ctx.fillStyle = "#302626";
+      ctx.beginPath(); ctx.ellipse(0, 0, r * .85, r * .48, 0, 0, TAU); ctx.fill();
+      ctx.lineWidth = kind === "ash" ? 2 : 1;
+      for (let i = 0; i < 9; i += 1) {
+        const dx = range(-r * .65, r * .65), dy = range(-r * .25, r * .25);
+        ctx.strokeStyle = i % 3 ? "#64504a" : "#b96d43";
+        ctx.beginPath(); ctx.moveTo(dx - r * .08, dy - r * .08); ctx.lineTo(dx, dy);
+        ctx.lineTo(dx - r * .03, dy + r * .1); ctx.stroke();
+      }
+    } else if (kind === "reeds") {
+      for (let i = 0; i < 8; i += 1) {
+        const dx = range(-r * .5, r * .5), dy = range(-r * .15, r * .35), h = range(r * .3, r * .6);
+        ctx.strokeStyle = "#66886a"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(dx, dy); ctx.lineTo(dx + 2, dy - h); ctx.stroke();
+        ctx.fillStyle = "#9b9568"; ctx.fillRect(dx, dy - h, 3, h * .22);
+      }
+    }
+    ctx.restore();
   }
 
   paintGrass(ctx, x, y, range, luminous) {

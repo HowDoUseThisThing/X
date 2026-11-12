@@ -39,7 +39,7 @@ const delay = ms => new Promise(done => setTimeout(done, ms));
 const savedProfile = (echoes = 5000) => {
   const save = defaultSave(); save.echoes = echoes; save.preferences.tutorialSeen = true; return save;
 };
-const allCharacters = () => { const save = savedProfile(); save.unlocked.warden = true; save.unlocked.oracle = true; return save; };
+const allCharacters = () => { const save = savedProfile(); for (const id of Object.keys(CHARACTERS)) save.unlocked[id] = true; return save; };
 
 async function saveReport() {
   report.passed = report.cases.length > 0 && report.cases.every(item => item.passed) && !report.fatal && !report.runtimeErrors.length;

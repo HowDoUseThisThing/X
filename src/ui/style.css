@@ -148,3 +148,22 @@ button:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
 .toast{top:auto;bottom:calc(var(--safe-bottom) + 14px)}
 #game:has(.toast.show) .orientation-hint{opacity:0}
 .overlay#title-screen .primary-btn{min-height:44px}
+
+/* Catalog characters and two-recipe build details. */
+.character-picker{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));width:min(740px,92vw);max-width:100%;flex-shrink:0}
+.character-pick{width:100%;min-width:0;overflow-wrap:anywhere}.character-pick>*{min-width:0}
+#title-screen{overflow:auto;justify-content:safe center}
+.upgrade-text small{white-space:pre-line}.build-chip{max-width:100%;white-space:normal}
+.pause-recipe{border-left:2px solid var(--line);padding:4px 0 4px 8px;margin-top:8px}.pause-recipe.ready{border-color:var(--gold)}.pause-recipe.ready>b{color:var(--gold-soft)}
+.pause-map-note{grid-column:1/-1;margin:0;color:#bcb1c9;font-size:11px;line-height:1.7;overflow-wrap:anywhere}.pause-map-note b{font-family:var(--mono);user-select:text}
+@media(max-width:650px) and (orientation:portrait){.character-picker{grid-template-columns:repeat(2,minmax(0,1fr));padding:0;gap:6px}.character-pick small{font-size:9px}.character-pick b{font-size:10px}}
+@media(orientation:landscape) and (max-height:520px){.character-picker{width:min(740px,94vw);padding:0;gap:5px}.character-pick{grid-template-columns:23px minmax(0,1fr);padding:5px;column-gap:5px}.character-pick b{font-size:9px}.character-pick>span{width:23px;height:23px}}
+
+button.build-chip{pointer-events:auto;cursor:pointer;min-height:44px;text-align:left;font-family:var(--sans)}
+
+/* Long recipe cards scroll independently so reroll/skip remain reachable. */
+@media(orientation:portrait),(min-height:521px){
+  .level-card{display:flex;flex-direction:column;overflow:hidden}
+  .level-card>.eyebrow,.level-card>h2,.level-card>.modal-sub,.level-card>.choice-actions{flex-shrink:0}
+  .level-card>.upgrade-list{min-height:0;overflow:auto;overscroll-behavior:contain}
+}
