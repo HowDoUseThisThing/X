@@ -1,1 +1,24 @@
-{"name":"moonlit-survivor-rea-lab","version":"1.0.0","private":true,"type":"module","description":"REA-guided browser survivor game reconstruction, by X先生","scripts":{"test":"node --test tests/*.test.mjs","serve":"node scripts/serve.mjs","extract:reference":"node scripts/extract-reference.mjs","test:browser":"node scripts/browser-check.mjs","package":"node scripts/package.mjs"},"engines":{"node":">=20"},"devDependencies":{"puppeteer-core":"25.17.0"}}
+{
+  "name": "moonlit-survivor-rea-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "REA-guided browser survivor game reconstruction, by X先生",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "serve": "node scripts/serve.mjs",
+    "extract:reference": "node scripts/extract-reference.mjs",
+    "test:browser": "node scripts/browser-check.mjs",
+    "test:strategy-browser": "node scripts/strategy-browser-check.mjs",
+    "package": "node scripts/package.mjs",
+    "test:performance": "node --expose-gc scripts/performance-check.mjs",
+    "test:frame-performance": "node scripts/frame-performance-check.mjs",
+    "test:release": "node scripts/release-check.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "puppeteer-core": "25.17.0"
+  }
+}

@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import puppeteer from 'puppeteer-core';
+import { launchTestBrowser } from './browser-launch.mjs';
 
 const executablePath = process.env.CHROME_PATH || [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -13,16 +13,18 @@ const executablePath = process.env.CHROME_PATH || [
 ].find(existsSync);
 assert.ok(executablePath, 'Set CHROME_PATH to a Chrome/Chromium executable');
 const server=spawn(process.execPath,['scripts/serve.mjs'],{env:{...process.env,PORT:'43928'},stdio:['ignore','pipe','pipe']});
-let browser;
+let browser, browserSession;
 const errors=[];
-async function audioPeak(page) {
-  return page.evaluate(async()=>{
+async function audioPeak(page, settle = false) {
+  return page.evaluate(async(settle)=>{
     const {ui}=window.__MOON_SURVIVOR__;
     const analyser=ui.audioContext.createAnalyser();analyser.fftSize=2048;
     ui.masterGain.connect(analyser);
     const samples=new Float32Array(analyser.fftSize);
     let peak=0;
     try {
+      // Drain buffered pre-mute samples before checking steady silent output.
+      if(settle) await new Promise(resolve=>setTimeout(resolve,Math.ceil(analyser.fftSize/ui.audioContext.sampleRate*2000)));
       for(let frame=0;frame<8;frame++) {
         await new Promise(resolve=>setTimeout(resolve,16));
         analyser.getFloatTimeDomainData(samples);
@@ -30,11 +32,11 @@ async function audioPeak(page) {
       }
     } finally {ui.masterGain.disconnect(analyser);}
     return peak;
-  });
+  },settle);
 }
 try {
   await Promise.race([once(server.stdout,'data'), once(server,'exit').then(()=>{throw Error('Server exited before startup');})]);
-  browser=await puppeteer.launch({executablePath,headless:true});
+  browserSession=await launchTestBrowser(executablePath); browser=browserSession.browser;
   const page=await browser.newPage();
   page.on('pageerror',e=>errors.push(String(e)));
   page.on('response',r=>{if(r.status()>=400) errors.push(`${r.status()} ${r.url()}`);});
@@ -43,6 +45,7 @@ try {
   await mkdir('output/screenshots',{recursive:true});
   await page.screenshot({path:'output/screenshots/title.png'});
   await page.click('#start');
+  if (await page.$('#tutorial-screen.is-visible')) await page.click('#tutorial-close');
   await page.waitForFunction(()=>window.__MOON_SURVIVOR__.game.state==='playing');
   await page.waitForFunction(()=>window.__MOON_SURVIVOR__.ui.audio.ready);
   const startPeak=await audioPeak(page);
@@ -54,7 +57,7 @@ try {
   assert.equal(await page.$eval('#sound',e=>e.getAttribute('aria-pressed')),'true');
   await page.click('#sound');
   assert.equal(await page.evaluate(()=>window.__MOON_SURVIVOR__.ui.soundOn),false);
-  assert.ok(await audioPeak(page)<0.00001,'Muted audio should have zero output');
+  assert.ok(await audioPeak(page,true)<0.00001,'Muted audio should have zero output after buffered samples drain');
   await page.click('#sound');
   await page.waitForFunction(()=>window.__MOON_SURVIVOR__.ui.audio.ready);
   const resumedPeak=await audioPeak(page);
@@ -128,6 +131,7 @@ try {
   await page.reload({waitUntil:'networkidle0'});
   await page.screenshot({path:'output/screenshots/mobile-title.png'});
   await page.click('#start');
+  if (await page.$('#tutorial-screen.is-visible')) await page.click('#tutorial-close');
   await page.waitForFunction(()=>window.__MOON_SURVIVOR__.ui.audio.ready);
   const mobilePeak=await audioPeak(page);
   assert.ok(mobilePeak>0.02,'Mobile start gesture should produce audio');
@@ -146,6 +150,7 @@ try {
   await page.screenshot({path:'output/screenshots/mobile-game.png'});
   assert.deepEqual(errors,[]);
   const report={passed:true,checked:['desktop start/movement','audio output signal','suspended audio recovery','mute and re-enable audio','offscreen enemy culling','sprite cache reuse','low quality preserves actors','player centered inside the map','player off-center at world edge','facing follows movement','pause/resume','upgrade choice','death/restart','page transition recovery (synthetic)','mobile audio output signal','mobile render resolution limit','mobile layout','touch vector adapter','blur clears input'],audio:{startPeak,resumedPeak,mobilePeak},renderChecks,errors,date:new Date().toISOString()};
+  Object.assign(report,{browser:await browser.version(),launchMode:browserSession.mode,userAgent:await page.evaluate(()=>navigator.userAgent)});
   await writeFile('output/browser-validation.json',JSON.stringify(report,null,2));
   console.log(JSON.stringify(report,null,2));
-} finally { if(browser) await browser.close(); server.kill(); }
+} finally { try { if(browserSession) await browserSession.close(); } finally { server.kill(); } }

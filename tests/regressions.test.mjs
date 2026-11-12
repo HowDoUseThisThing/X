@@ -18,11 +18,16 @@ it('death takes priority over a simultaneous experience pickup', () => {
   assert.equal(g.gems.length, 0);
 });
 
-it('capped multishot is not offered as an ineffective upgrade', () => {
+it('maxed weapons are never offered as ineffective normal upgrades', () => {
   for (let seed=0; seed<80; seed++) {
-    const g=new SurvivorGame(seed); g.start(); g.player.projectileCount=5;
+    const g=new SurvivorGame(seed); g.start();
+    g.build.weapons[0].level=5;
     g.player.xp=8; g.checkLevelUp();
     assert.equal(g.upgradeChoices.length,3);
-    assert.ok(g.upgradeChoices.every(x=>x.id!=='multishot'));
+    assert.ok(g.upgradeChoices.every(x=>!(x.type==='weapon'&&x.target==='moonArrow')));
+    assert.ok(g.upgradeChoices.every(x=>x.type!=='evolve'));
+    g.build.passives.might=3;
+    const ready=g.rollUpgradeChoices();
+    assert.equal(ready[0].id,'evolve:moonArrow');
   }
 });

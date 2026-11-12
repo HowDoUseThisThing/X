@@ -40,6 +40,8 @@ export class SpriteCache {
       ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0;
       ctx.fillStyle = "rgba(13,11,22,.72)";
       ctx.beginPath(); ctx.arc(-3, -1, 2.1, 0, TAU); ctx.arc(4, -1, 2.1, 0, TAU); ctx.fill();
+      const mark = { gunner: "⊙", charger: "»", splitter: "Ⅱ", bomber: "!", colossus: "♜", executioner: "†" }[enemy.type];
+      if (mark) { ctx.fillStyle = "#fff0d8"; ctx.font = `bold ${Math.round(radius * 1.1)}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(mark, 0, 1); }
     });
   }
 

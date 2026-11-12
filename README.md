@@ -1,6 +1,8 @@
-# 生存者：REA 重构实验室
+# 夜潮生存 · 策略构筑版
 
 以用户提供的网页版游戏为架构样本，运用 REA（Reverse Engineer Anything）的静态 JavaScript 分析工作流，制作一个原创的吸血鬼幸存者风格浏览器生存游戏。演示署名：X先生。
+
+> 策略构筑扩展的完整实现和自动化验收已完成，证据见 [验收记录](docs/acceptance.md)；线上版本以实际部署结果为准。
 
 ## 启动
 
@@ -21,37 +23,50 @@ npm run serve
 
 ## 内容
 
-- `index.html`：启动与游戏 HUD。
-- `src/`：模块化实现，分离核心循环、确定性随机数、游戏规则、Canvas 渲染和 UI。
+- `index.html`：启动、角色选择与游戏 HUD。
+- `src/`：模块化实现，分离核心循环、确定性随机数、内容配置、构筑/成长、游戏规则、Canvas 渲染和 UI。
 - `src/render/canvas.js`：原创的 Canvas 2D 场景渲染，不需要外部运行时。
-- `docs/`：REA 静态分析观察、限制与重构决策。
+- [`docs/architecture.md`](docs/architecture.md)：保留 `9dbeb1b` 历史架构补记，并追加当前扩展的模块、状态机、数据归属、存储与实体预算。
+- [`docs/gameplay-design.md`](docs/gameplay-design.md)：完整玩法设计、当前实现契约与验收标准。
+- [`docs/acceptance.md`](docs/acceptance.md)：功能矩阵、测试结果、性能基准、打包证据和真实设备验证边界。
 - [`docs/tutorial.md`](docs/tutorial.md)：完整 Markdown 教程（作者：X先生）。
+- `docs/own-implementation-rea-analysis.json`：REA 6.8.0 静态分析历史摘要与 coverage 限制，本轮扩展未重新扫描。
 
 ## 版权边界
 
 本作品是对“生存者自动攻击、移动躲避、经验升级”等类型玩法的独立实现，不复制参考网页中的港区、资产、文案、关卡或游戏代码。仅保留其自包含 HTML、Canvas、输入、HUD、启动流程和帧循环等高层架构思路。角色、怪物、地图和音效均由本项目程序化绘制/合成。REA 是分析工具，不是游戏引擎，也不负责自动生成等价实现。
 
-
-- docs/own-implementation-rea-analysis.json：对本项目选定源文件完成的 REA 6.8.0 静态分析摘要和 coverage 限制。
-
-
 ## 验收与交付
 
-本作采用无尽生存玩法，包含 4 种敌人、8 类升级、受伤/闪避反馈、暂停、死亡结算和重开。无账号、存档或外部运行时资源。
+本地扩展采用无尽策略构筑玩法：3 角色、6 武器、6 被动、6 进化、8 种普通敌人、2 种首领、精英/波次、宝箱/祭坛/拾取物、局外回响强化、永久解锁和成就。最多携带 4 武器 + 4 被动；游侠默认可用，另两名角色需消耗回响解锁。使用 `localStorage` 保存局外进度；不保存种子或进行中的单局，也不需要账号或外部运行时资源。验收覆盖范围与结果见验收记录。
+
+- 手机横屏为推荐布局，横竖屏均可游玩；触控为摇杆与闪避，支持双指同时操作。
+- 升级时可用数字键 `1/2/3` 选择，`R` 重抽，`S` 跳过。
+- 候选按权重抽取、进化保底；合法选项不足 3 项时全部显示，无项时回血兜底。早期只有 1 件武器的宝箱可以只显示 1 项合法升级。
+- 暂停时可查看当前构筑，或带着回响撤离。
+- 潮回声廊可购买永久刻印、解锁/选择角色和查看成就；永久刻印和角色选择下一局生效。
+- 正常游玩每局使用新种子；核心保留显式指定种子的复现入口。满额时精英/首领腾位，避免因普通怪占满预算而漏掉事件。
 
 ```bash
 npm ci
 npm run test:browser
+npm run test:strategy-browser
+npm run test:performance
+npm run test:frame-performance
 npm run package
+npm run test:release
 ```
 
 浏览器测试需要 Node.js 22.12+ 与本机 Chrome/Chromium；可通过 `CHROME_PATH` 指定浏览器。核心游戏与 `npm test` 不依赖 npm 安装。
 
-浏览器报告在 `output/browser-validation.json`，截图在 `output/screenshots`。当前已通过桌面 Chrome 和 Edge 的自动验收，覆盖音频信号、声音中断恢复、静音重开、绘制缓存和屏幕外裁剪。音频信号检查不能代替扬声器实际出声；手机测试使用模拟视口和输入适配器，安卓微信真机的首次发声、后台恢复、听感及帧率仍需实测。REA 自实现分析是历史快照，未对本轮修复重新扫描。
+本轮单元测试 147/147 通过；Chrome 与 Edge 的策略浏览器检查各 63/63 通过，覆盖桌面、手机横竖屏、旋转、完整模态和双指触摸；原有音频、移动、镜头与裁剪检查也通过。报告、截图和耐久证据路径见 [`docs/acceptance.md`](docs/acceptance.md)。
 
-`npm run package` 生成 `output/release`，可部署其中的 `index.html`、`src/` 和 `assets/` 到静态托管服务。已通过 GitHub Pages 发布。历史 PDF 仅留作旧文件，交付以 Markdown 为准。
+性能验收保留原设计门槛：桌面 600 敌人 + 4 武器的平均完整帧时间相对基线恶化不超过 25%；手机模拟 Node 逻辑更新平均小于 8ms/帧。受控浏览器报告位于 `output/frame-performance-validation.json`，包含更新、绘制与读回同步，排除 DOM HUD、音频和垂直同步；Node 逻辑的绝对耗时与相对开销另行记录。本轮受控更新与绘制耗时增加约 10.12%，低于 25% 门槛；844×390、600 敌人的 Node 逻辑约 0.187ms/帧。完整方法、逻辑相对开销与 GC 后内存采样见验收记录。两项性能命令需要 Git 仓库中的 `9dbeb1b` 基线。
+
+音频信号检查不能代替扬声器实际出声；手机模拟不能代替安卓微信真机的首次发声、后台恢复、听感与帧率验证。本轮尚无真机验收结论。
+
+`npm run package` 用于生成 `output/release`，其中的 `index.html`、`src/` 和 `assets/` 可部署到静态托管服务；已生成并验证独立包内流程，19 个运行时文件与源码哈希一致。Git 交付以仓库提交记录为准，线上版本以实际部署结果为准。历史 PDF 仅留作旧文件，交付以 Markdown 为准。
+
 ## 在线游玩
 
-https://howdousethisthing.github.io/X/
-
-
+[在线站点](https://howdousethisthing.github.io/X/) 的内容以实际部署结果为准；按上面的启动步骤可以体验当前源码版本。

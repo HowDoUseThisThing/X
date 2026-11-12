@@ -27,18 +27,23 @@
     <div class="mobile-controls" id="mobile-controls" aria-label="触屏移动控制"><div id="stick-zone" class="stick-zone"><div class="stick-base"><i id="stick-knob"></i></div></div><button id="dash" class="dash-btn">闪避</button></div>
     <section class="overlay is-visible" id="title-screen" aria-labelledby="title-main">
       <div class="title-particles" aria-hidden="true"></div><p class="eyebrow">一场潮汐 · 无尽夜色</p><h1 id="title-main">月蚀<span>余烬</span></h1><p class="lead">潮声深处，群影苏醒。<br>移动、进化，在黎明前活下来。</p>
+      <div class="character-picker" id="character-picker" aria-label="选择角色"></div>
       <button class="primary-btn" id="start">开始生存 <span>→</span></button>
+      <div class="title-actions"><button class="text-btn" id="open-meta">潮回声廊 <span>✦</span></button><button class="text-btn" id="open-help">玩法指南 <span>?</span></button></div>
       <div class="key-hint"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动 <i></i> <kbd>空格</kbd> 闪避</div>
       <p class="credit">独立创作 · 玩法研究演示 · X先生</p>
     </section>
-    <section class="overlay hidden" id="level-screen" aria-labelledby="level-title"><div class="modal-card level-card"><p class="eyebrow">POWER SURGE · 进化选择</p><h2 id="level-title">新的力量</h2><p class="modal-sub">选择一项，继续你的生存</p><div id="upgrade-list" class="upgrade-list"></div></div></section>
-    <section class="overlay hidden" id="pause-screen"><div class="modal-card"><p class="eyebrow">喘息片刻</p><h2>潮声未停</h2><p class="modal-sub">夜色仍在扩散，准备好再出发。</p><button class="primary-btn" id="resume">继续生存 <span>→</span></button></div></section>
-    <section class="overlay hidden" id="result-screen"><div class="modal-card result-card"><p class="eyebrow">THE NIGHT REMEMBERS</p><h2 id="result-title">夜尽</h2><p id="result-copy" class="modal-sub"></p><div class="result-stats"><div><small>存活时间</small><b id="final-time">00:00</b></div><div><small>击退暗影</small><b id="final-kills">0</b></div><div><small>抵达等级</small><b id="final-level">LV. 1</b></div></div><button class="primary-btn" id="restart">再入夜潮 <span>↻</span></button></div></section>
-    <footer class="hud footer-hint"><span>自动瞄准 · 自动攻击</span><span>X先生 · 夜潮生存</span></footer>
+    <section class="overlay hidden" id="meta-screen" role="dialog" aria-modal="true" aria-label="潮回声廊"></section>
+    <section class="overlay hidden" id="tutorial-screen" role="dialog" aria-modal="true" aria-labelledby="tutorial-title"><div class="modal-card tutorial-card"><p class="eyebrow">FIRST LIGHT · 玩法指南</p><h2 id="tutorial-title">在夜潮中构筑</h2><ol><li><b>移动即生存</b> · WASD / 方向键或左下摇杆移动，自动攻击附近敌人。</li><li><b>闪避穿过险境</b> · 空格 / Shift 或右下闪避按钮；可边移动边闪避。</li><li><b>构筑你的流派</b> · 升级与宝箱按 1 / 2 / 3 三选一；R 重抽，S 跳过（仅升级）。最多 4 武器 + 4 被动。</li><li><b>配对即可进化</b> · 武器 Lv.5 + 对应被动 Lv.3，下一次选择会出现进化；暂停可查看完整进度。</li><li><b>带着回响归来</b> · 按 P / Esc 暂停并撤离；死亡同样结算。潮回声廊的购买与角色选择在下一局生效。</li></ol><p class="tutorial-save-note">关闭后会记住已读；标题页可随时重看。</p><button class="primary-btn" id="tutorial-close">明白了，继续 <span>→</span></button></div></section>
+    <section class="overlay hidden" id="level-screen" aria-labelledby="level-title"><div class="modal-card level-card"><p class="eyebrow">POWER SURGE · 进化选择</p><h2 id="level-title">新的力量</h2><p class="modal-sub" id="level-sub">选择一项，继续你的生存</p><div id="upgrade-list" class="upgrade-list"></div><div class="choice-actions"><button id="reroll">重抽 <kbd>R</kbd><span id="reroll-count"></span></button><button id="skip-upgrade">跳过 <kbd>S</kbd><span id="skip-count"></span></button></div></div></section>
+    <section class="overlay hidden" id="pause-screen"><div class="modal-card pause-card"><p class="eyebrow">喘息片刻</p><h2>潮声未停</h2><p class="modal-sub">夜色仍在扩散，准备好再出发。</p><div id="pause-build" class="pause-build"></div><div class="pause-actions"><button class="primary-btn" id="resume">继续生存 <span>→</span></button><button class="text-btn" id="evacuate">带着回响撤离</button><button class="text-btn" id="pause-meta">查看潮回声廊</button></div></div></section>
+    <section class="overlay hidden" id="result-screen"><div class="modal-card result-card"><p class="eyebrow">THE NIGHT REMEMBERS</p><h2 id="result-title">夜尽</h2><p id="result-copy" class="modal-sub"></p><div class="result-stats"><div><small>存活时间</small><b id="final-time">00:00</b></div><div><small>击退暗影</small><b id="final-kills">0</b></div><div><small>抵达等级</small><b id="final-level">LV. 1</b></div></div><div class="echo-result" id="echo-result"></div><div class="result-actions"><button class="primary-btn" id="restart">再入夜潮 <span>↻</span></button><button class="text-btn" id="result-meta">前往潮回声廊 <span>✦</span></button></div></div></section>
+    <div class="boss-hud hidden" id="boss-hud"><div class="boss-meta"><span id="boss-name"></span><small id="boss-hp-text"></small></div><div class="boss-bar"><i id="boss-hp"></i></div></div>
+    <div class="build-hud hud" id="build-hud" aria-label="当前构筑"></div>
+    <div class="orientation-hint" role="note">旋转为横屏，构筑与战场看得更清楚</div>
+    <div class="event-hud hud" id="event-hud"></div>
+    <footer class="hud footer-hint"><span id="footer-hint">自动攻击 · 空格闪避</span><span>X先生 · 夜潮生存</span></footer>
   </main>
   <script type="module" src="src/main.js"></script>
 </body>
 </html>
-
-
-
